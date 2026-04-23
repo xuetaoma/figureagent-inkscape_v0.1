@@ -74,6 +74,16 @@ The chat UI is intentionally concise:
 
 ## Local Setup
 
+Before starting, you need:
+
+- an API key for the provider you want to use
+- a model that can understand images if you want to use image attachments in the chat
+
+Recommended starting point:
+
+- OpenAI API key
+- `MAIN_MODEL=gpt-5.4`
+
 Create one local `.env` file in the project root:
 
 ```bash
