@@ -1,47 +1,52 @@
 # Inkscape Copilot
 
-Inkscape Copilot is a chat-first sidecar for Inkscape.
+Inkscape Copilot is an early AI figure-editing agent for Inkscape. The goal is not just to generate simple SVG shapes from prompts. The goal is to help edit real publication figures: inspect the current document, identify the right objects, plan a precise edit, apply it in Inkscape, and verify what changed.
 
 The current product surface is intentionally small:
 
 1. Open an SVG in Inkscape.
 2. Use `Extensions -> Copilot -> Open Copilot Chat`.
 3. Talk to the copilot in the browser window.
-4. When you send a message, the copilot plans the step and then applies it back into Inkscape.
+4. The copilot syncs the document, plans the next step, and applies supported changes back into Inkscape.
 
-The goal is simple: keep the assistant conversational, document-aware, and able to make supported edits directly on the current drawing.
+## Current Status
+
+This is a working prototype, not a finished editor. It can already make useful edits, but the main engineering direction is reliable document understanding and target selection.
+
+The current architecture is:
+
+- Inkscape observes and executes.
+- The browser chat owns conversation and planning.
+- Shared bridge files carry the latest snapshot, planned step, and execution result.
+- The scene graph gives every visible object an addressable ID plus semantic hints.
+- The planner should target objects through explicit selectors instead of relying on stale manual selection.
 
 ## Inkscape Menu
 
-The extension now exposes only two menu items:
+The extension exposes only two menu items:
 
 - `Open Copilot Chat`
 - `Apply Copilot Changes`
 
-`Open Copilot Chat` opens a fresh browser-side chat window and captures a document snapshot from the current Inkscape file.
+`Open Copilot Chat` starts or refreshes the sidecar chat and captures the active document state.
 
-`Apply Copilot Changes` is the worker entry point that applies queued changes. In normal chat use, the browser triggers this automatically after action generation is done.
+`Apply Copilot Changes` is the Inkscape-side worker entry point. In normal chat use, the browser triggers this automatically after an action plan is ready, so users should rarely need to click it manually.
 
-## Current Capabilities
+## What It Can Do Now
 
-The copilot can currently:
+Supported capabilities include:
 
-- modify the current selection
-- create new basic shapes and diagram primitives
+- create basic shapes and diagram primitives
 - create and edit text
-- target existing objects by `object_id` or visible text
-- replace text labels directly on existing drawings
-- move or restyle existing objects without rebuilding the whole design
-- use attached reference images in the chat flow when running on the OpenAI path
-
-Supported action families include:
-
-- selection style edits
-- selection transforms
-- object-targeted edits
-- text replacement
-- rectangle, rounded rectangle, circle, ellipse, polygon, star, line, arrow, bracket, repeated circles
-- labeled layer bars for schematic diagrams
+- change fill, stroke paint, stroke width, dash pattern, opacity, and font size
+- move, resize, scale, rotate, align, and distribute objects
+- target existing objects by `object_id`, visible text, role, panel, axis, group, parent, and relationship hints
+- detect arbitrary panel labels such as `a`, `b`, `c`, ..., not just `a-d`
+- adjust axis ticks and tick label sizes
+- use rendered page snapshots so the model can compare SVG state with visual appearance
+- associate path-based math glyphs such as rho/Omega with nearby text labels through `text_group_id` and `glyph_for`
+- include publication rubric, QA findings, and safe fix suggestions in the planning context
+- use attached reference images when running with an image-capable OpenAI model
 
 The copilot is conservative about page resizing:
 
@@ -49,35 +54,42 @@ The copilot is conservative about page resizing:
 
 ## Product Behavior
 
-The browser chat is the primary interface.
+When you send a chat message:
 
-When you send a message:
-
-1. the chat uses the latest synced document snapshot
-2. the model replies briefly about what it will do
+1. the sidecar uses the latest document snapshot, including structured SVG state and a rendered PNG snapshot
+2. the model replies briefly about the intended operation
 3. the model generates a structured action plan
-4. the plan is queued
-5. Inkscape is invoked once to apply the change
+4. the plan is written to bridge state
+5. Inkscape applies the finalized plan once
+6. the worker resyncs and writes execution/verification results
 
 The chat UI is intentionally concise:
 
 - assistant replies are short and operational
-- the raw JSON action plan is not shown in the conversation
+- raw JSON action plans are hidden
 - the message area scrolls independently from the session panel
+- the session panel shows whether work is currently running
 
 ## Project Layout
 
-- `inkscape_copilot/`: bridge, planner, executor, worker, web UI, and API bridge
-- `inkscape_extension/`: Inkscape manifest files for the two remaining menu entries
-- `state/`: runtime state used during local development
-- `operation_flow.md`: current architecture and workflow notes
+- `inkscape_copilot/`: bridge, planner, executor, worker, web UI, scene graph, targeting, verification, and API bridge
+- `inkscape_extension/`: Inkscape manifest files for the two menu entries
+- `scripts/`: setup and evaluation helpers
+- `operation_flow.md`: product workflow and bridge responsibilities
+- `architecture.md`: system architecture and module responsibilities
+- `selection_architecture.md`: target-resolution model
+- `human_level_editor_roadmap.md`: long-term agent roadmap
+- `publication_adjustment_roadmap.md`: publication figure editing roadmap
+- `publication_rubric.md`: baseline rules for publication-quality figure evaluation
+- `publication_examples/`: reference and evaluated example figures
+- `publication_feedback.md`: user evaluation log for copilot results
 
 ## Local Setup
 
 Before starting, you need:
 
 - an API key for the provider you want to use
-- a model that can understand images if you want to use image attachments in the chat
+- a model that can read images if you want screenshot/reference-image support
 
 Recommended starting point:
 
@@ -90,7 +102,7 @@ Create one local `.env` file in the project root:
 cp .env.example .env
 ```
 
-Current recommended config:
+Recommended config:
 
 ```bash
 INKSCAPE_COPILOT_PROVIDER=openai
@@ -104,8 +116,10 @@ Optional variables:
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
 - `INKSCAPE_COPILOT_ENV_FILE`
+- `INKSCAPE_COPILOT_IMAGE_DETAIL`: defaults to `low` for faster image planning
+- `INKSCAPE_COPILOT_API_TIMEOUT_SECONDS`: defaults to `180`
 
-The installed Inkscape extension is configured to read one root `.env` file. By default this project resolves:
+The installed Inkscape extension is configured to read one root `.env` file. On this development machine the expected path is:
 
 ```bash
 /Users/xuetao.ma/Desktop/inkscape-copilot/.env
@@ -140,7 +154,7 @@ source .venv/bin/activate
 Notes:
 
 - `requirements.txt` installs the local package with `pip install -e .`
-- the browser-side copilot does not need extra third-party API SDKs
+- the browser-side copilot does not need third-party API SDKs
 - the Inkscape extension runtime uses Inkscape's bundled Python environment for `inkex`
 
 ## Run The Web UI Manually
@@ -177,8 +191,25 @@ After copying, restart Inkscape. The `Extensions -> Copilot` submenu should cont
 - `Open Copilot Chat`
 - `Apply Copilot Changes`
 
-## Notes
+## Evaluation Harness
 
-- This is still an early product build.
-- The architecture is now centered on a browser-side conversational UI plus an Inkscape-side executor.
-- The next quality step is deeper SVG awareness and more reliable modification of existing compositions.
+To test screenshot-to-action planning without manually using the chat UI:
+
+```bash
+python3 scripts/evaluate_screenshots.py "/path/to/reference.png"
+```
+
+The harness writes JSON results under `state/` and reports whether the plan produced actions, avoided confirmation stalls, and fit newly-created geometry inside the current page.
+
+## Development Direction
+
+The next major work is making the copilot more agentic:
+
+- rubric-based publication evaluation
+- user-reviewed examples and feedback
+- richer scene graph extraction
+- stronger panel/axis/legend detection
+- better grouping of imported path glyphs with text labels
+- more deterministic connector and electrode routing
+- visual QA after every action
+- corrective follow-up when verification detects a failed or incomplete edit

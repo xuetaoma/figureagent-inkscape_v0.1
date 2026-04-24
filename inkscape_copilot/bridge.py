@@ -34,6 +34,9 @@ DOCUMENT_CONTEXT_FILE = STATE_DIR / "document_context.json"
 SESSION_FILE = STATE_DIR / "session.json"
 PLANNED_STEP_FILE = STATE_DIR / "planned_step.json"
 EXECUTION_RESULT_FILE = STATE_DIR / "execution_result.json"
+SNAPSHOT_DIR = STATE_DIR / "snapshots"
+DOCUMENT_SVG_SNAPSHOT_FILE = SNAPSHOT_DIR / "current_document.svg"
+DOCUMENT_PNG_SNAPSHOT_FILE = SNAPSHOT_DIR / "current_document.png"
 
 
 def utc_now() -> str:
@@ -112,6 +115,8 @@ def ensure_state_files() -> None:
                     "selection": [],
                     "object_count": 0,
                     "objects": [],
+                    "visual_snapshot": None,
+                    "panels": [],
                     "updated_at": utc_now(),
                 },
                 indent=2,
@@ -290,6 +295,10 @@ def reset_state() -> None:
                 "height": DEFAULT_PAGE_HEIGHT_PX,
                 "selection_count": 0,
                 "selection": [],
+                "object_count": 0,
+                "objects": [],
+                "visual_snapshot": None,
+                "panels": [],
                 "updated_at": utc_now(),
             },
             indent=2,
@@ -393,6 +402,7 @@ def write_execution_result(
     job_id: str | None = None,
     summary: str | None = None,
     error: str | None = None,
+    verification: dict[str, Any] | None = None,
 ) -> None:
     ensure_state_files()
     payload = {
@@ -400,6 +410,7 @@ def write_execution_result(
         "job_id": job_id,
         "summary": summary,
         "error": error,
+        "verification": verification,
         "updated_at": utc_now(),
     }
     _atomic_write(EXECUTION_RESULT_FILE, json.dumps(payload, indent=2))
@@ -421,6 +432,7 @@ def read_execution_result() -> dict[str, Any]:
     payload.setdefault("job_id", None)
     payload.setdefault("summary", None)
     payload.setdefault("error", None)
+    payload.setdefault("verification", None)
     payload.setdefault("updated_at", utc_now())
     return payload
 
@@ -445,6 +457,8 @@ def read_document_context() -> dict[str, Any]:
             "selection": [],
             "object_count": 0,
             "objects": [],
+            "visual_snapshot": None,
+            "panels": [],
             "updated_at": utc_now(),
         }
     payload = json.loads(raw)
@@ -456,6 +470,8 @@ def read_document_context() -> dict[str, Any]:
     payload.setdefault("selection", [])
     payload.setdefault("object_count", len(payload.get("objects", [])) if isinstance(payload.get("objects"), list) else 0)
     payload.setdefault("objects", [])
+    payload.setdefault("visual_snapshot", None)
+    payload.setdefault("panels", [])
     payload.setdefault("updated_at", utc_now())
     return payload
 

@@ -1,18 +1,43 @@
 from __future__ import annotations
 
 import re
-from math import atan2, cos, pi, sin
+import time
+from math import atan2, cos, pi, sin, sqrt
 
 import inkex
 from inkex import Circle, PathElement, Rectangle, Transform
 
+from .bridge import STATE_DIR, read_document_context
 from .schema import ActionPlan
+from .scene_graph import extract_scene_objects
+from .targeting import (
+    TargetQuery,
+    bbox_dict as shared_bbox_dict,
+    infer_role,
+    nearest_panel,
+    node_text,
+    panel_labels,
+    resolve_ids_from_snapshot,
+    style_value,
+    tag_name,
+)
 
 
 def _set_style_value(node: inkex.BaseElement, key: str, value: str) -> None:
-    style = dict(node.style)
+    style = node.style
     style[key] = value
-    node.style = style
+    node.set("style", str(style))
+    if key == "font-size":
+        node.set("font-size", value)
+
+
+def _font_debug_log(message: str) -> None:
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with (STATE_DIR / "font_size_debug.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{time.time():.3f} {message}\n")
+    except Exception:
+        pass
 
 
 def _clean_text(value: str) -> str:
@@ -21,20 +46,11 @@ def _clean_text(value: str) -> str:
 
 
 def _tag_name(node: inkex.BaseElement) -> str:
-    return str(node.tag).split("}")[-1].lower()
+    return tag_name(node)
 
 
 def _node_text(node: inkex.BaseElement) -> str:
-    parts: list[str] = []
-    try:
-        if node.text:
-            parts.append(str(node.text))
-        for descendant in node.iterdescendants():
-            if descendant.text:
-                parts.append(str(descendant.text))
-    except Exception:
-        return ""
-    return " ".join(" ".join(parts).split())
+    return node_text(node) or ""
 
 
 def _find_node_by_id(svg: inkex.SvgDocumentElement, object_id: str) -> inkex.BaseElement | None:
@@ -70,18 +86,170 @@ def _find_node_by_text(svg: inkex.SvgDocumentElement, text: str) -> inkex.BaseEl
     return matches[-1] if matches else None
 
 
+def _bbox_dict(node: inkex.BaseElement) -> dict[str, float] | None:
+    return shared_bbox_dict(node)
+
+
+def _snapshot_target_ids(params: dict) -> list[str]:
+    payload = read_document_context()
+    objects = payload.get("objects", [])
+    if not isinstance(objects, list):
+        return []
+    return resolve_ids_from_snapshot(
+        [item for item in objects if isinstance(item, dict)],
+        TargetQuery.from_params(params),
+    )
+
+
+def _live_semantic_target_ids(svg: inkex.SvgDocumentElement, params: dict) -> list[str]:
+    query = TargetQuery.from_params(params)
+    try:
+        objects = [item.to_dict() for item in extract_scene_objects(svg, limit=None)]
+    except Exception:
+        return []
+    return resolve_ids_from_snapshot(objects, query)
+
+
+def _line_endpoints(node: inkex.BaseElement) -> tuple[float, float, float, float] | None:
+    try:
+        return (
+            float(node.get("x1")),
+            float(node.get("y1")),
+            float(node.get("x2")),
+            float(node.get("y2")),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _nearest_axis_anchor(svg: inkex.SvgDocumentElement, bbox: dict[str, float], axis: str, panel: str | None) -> float | None:
+    axis_line_ids = _snapshot_target_ids({"role": "axis_line", "axis": axis, "panel": panel})
+    candidates: list[float] = []
+    for object_id in axis_line_ids:
+        node = _find_node_by_id(svg, object_id)
+        if node is None:
+            continue
+        line_bbox = _bbox_dict(node)
+        if not line_bbox:
+            continue
+        if axis == "x":
+            candidates.append(line_bbox["top"] + (line_bbox["height"] / 2.0))
+        else:
+            candidates.append(line_bbox["left"] + (line_bbox["width"] / 2.0))
+    if not candidates:
+        return None
+    center = bbox["top"] + (bbox["height"] / 2.0) if axis == "x" else bbox["left"] + (bbox["width"] / 2.0)
+    return min(candidates, key=lambda value: abs(value - center))
+
+
+def _node_semantics(svg: inkex.SvgDocumentElement, node: inkex.BaseElement) -> tuple[str | None, str | None, str | None]:
+    bbox = _bbox_dict(node)
+    text = _node_text(node)
+    role, axis = infer_role(_tag_name(node), text, bbox, style_value(node, "fill"), style_value(node, "stroke"))
+    panel = nearest_panel(bbox, panel_labels(list(svg.iterdescendants())))
+    return role, panel, axis
+
+
+def _set_tick_length(svg: inkex.SvgDocumentElement, nodes: list[inkex.BaseElement], length_px: float) -> None:
+    if length_px <= 0:
+        raise inkex.AbortExtension("Tick length must be greater than zero.")
+    for node in nodes:
+        if _tag_name(node) != "line":
+            continue
+        endpoints = _line_endpoints(node)
+        if endpoints is None:
+            continue
+        x1, y1, x2, y2 = endpoints
+        bbox = _bbox_dict(node)
+        if not bbox:
+            continue
+        role, panel, axis = _node_semantics(svg, node)
+        if role != "axis_tick":
+            continue
+        anchor = _nearest_axis_anchor(svg, bbox, axis or "x", panel)
+        if axis == "x":
+            if anchor is None:
+                anchor = y1
+            if abs(y1 - anchor) <= abs(y2 - anchor):
+                node.set("y1", str(anchor))
+                node.set("y2", str(anchor + length_px if y2 >= y1 else anchor - length_px))
+            else:
+                node.set("y2", str(anchor))
+                node.set("y1", str(anchor + length_px if y1 >= y2 else anchor - length_px))
+        elif axis == "y":
+            if anchor is None:
+                anchor = x1
+            if abs(x1 - anchor) <= abs(x2 - anchor):
+                node.set("x1", str(anchor))
+                node.set("x2", str(anchor + length_px if x2 >= x1 else anchor - length_px))
+            else:
+                node.set("x2", str(anchor))
+                node.set("x1", str(anchor + length_px if x1 >= x2 else anchor - length_px))
+
+
 def _target_nodes(svg: inkex.SvgDocumentElement, params: dict) -> list[inkex.BaseElement]:
-    node = None
-    object_id = params.get("object_id")
-    if isinstance(object_id, str) and object_id.strip():
-        node = _find_node_by_id(svg, object_id.strip())
-    if node is None:
-        text = params.get("text")
-        if isinstance(text, str) and text.strip():
-            node = _find_node_by_text(svg, text.strip())
-    if node is None:
+    query = TargetQuery.from_params(params)
+    if query.object_id and not query.include_descendants:
+        node = _find_node_by_id(svg, query.object_id)
+        if node is None:
+            raise inkex.AbortExtension("Could not find the requested existing object.")
+        return [node]
+
+    semantic_ids = _snapshot_target_ids(params)
+    if not semantic_ids and query.has_selector():
+        semantic_ids = _live_semantic_target_ids(svg, params)
+
+    resolved: list[inkex.BaseElement] = []
+    seen_ids: set[str] = set()
+    for candidate_id in semantic_ids:
+        node = _find_node_by_id(svg, candidate_id)
+        if node is None:
+            continue
+        node_id = node.get("id")
+        if node_id and node_id in seen_ids:
+            continue
+        if node_id:
+            seen_ids.add(node_id)
+        resolved.append(node)
+
+    if resolved:
+        return resolved
+
+    if query.text and not any(
+        (
+            query.role,
+            query.object_index,
+            query.panel,
+            query.axis,
+            query.tag,
+            query.parent_id,
+            query.group_id,
+            query.panel_root_id,
+            query.label_for,
+            query.attached_to,
+            query.text_group_id,
+            query.glyph_for,
+        )
+    ):
+        node = _find_node_by_text(svg, query.text)
+        if node is not None:
+            return [node]
+
+    if query.has_selector():
         raise inkex.AbortExtension("Could not find the requested existing object.")
-    return [node]
+    raise inkex.AbortExtension("Could not find the requested existing object.")
+
+
+def _merge_selection(current: list[inkex.BaseElement], incoming: list[inkex.BaseElement]) -> list[inkex.BaseElement]:
+    merged: list[inkex.BaseElement] = list(current)
+    seen = {node.get("id") or str(id(node)) for node in current}
+    for node in incoming:
+        key = node.get("id") or str(id(node))
+        if key in seen:
+            continue
+        merged.append(node)
+        seen.add(key)
+    return merged
 
 
 def _replace_text(nodes: list[inkex.BaseElement], new_text: str) -> None:
@@ -203,11 +371,146 @@ def _set_stroke_width(nodes: list[inkex.BaseElement], stroke_width_px: float) ->
         _set_style_value(node, "stroke-width", str(max(0.0, stroke_width_px)))
 
 
+def _parse_css_length_px(value: object) -> float | None:
+    if value is None:
+        return None
+    match = re.fullmatch(r"\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*", str(value))
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "px").lower()
+    if unit == "px":
+        return number
+    if unit == "pt":
+        return number * 96.0 / 72.0
+    if unit == "in":
+        return number * 96.0
+    if unit == "cm":
+        return number * 96.0 / 2.54
+    if unit == "mm":
+        return number * 96.0 / 25.4
+    return None
+
+
+def _root_user_units_per_css_px(node: inkex.BaseElement) -> float:
+    try:
+        root = node.getroottree().getroot()
+    except Exception:
+        return 1.0
+    raw_viewbox = root.get("viewBox") or root.get("viewbox")
+    if not raw_viewbox:
+        return 1.0
+    parts = [part for part in re.split(r"[\s,]+", raw_viewbox.strip()) if part]
+    if len(parts) != 4:
+        return 1.0
+    try:
+        _min_x, _min_y, viewbox_width, viewbox_height = (float(part) for part in parts)
+    except ValueError:
+        return 1.0
+    viewport_width_px = _parse_css_length_px(root.get("width"))
+    viewport_height_px = _parse_css_length_px(root.get("height"))
+    scales: list[float] = []
+    if viewport_width_px and viewport_width_px > 0 and viewbox_width > 0:
+        scales.append(viewbox_width / viewport_width_px)
+    if viewport_height_px and viewport_height_px > 0 and viewbox_height > 0:
+        scales.append(viewbox_height / viewport_height_px)
+    return sum(scales) / len(scales) if scales else 1.0
+
+
+def _hexad_scale(hexad: tuple[float, float, float, float, float, float]) -> float:
+    a, b, c, d, _e, _f = hexad
+    scale_x = sqrt((a * a) + (b * b))
+    scale_y = sqrt((c * c) + (d * d))
+    scales = [scale for scale in (scale_x, scale_y) if scale > 0]
+    return sum(scales) / len(scales) if scales else 1.0
+
+
+def _raw_transform_chain_scale(node: inkex.BaseElement) -> float:
+    scale = 1.0
+    try:
+        chain = list(node.iterancestors()) + [node]
+    except Exception:
+        chain = [node]
+    for item in chain:
+        raw_transform = item.get("transform")
+        if not raw_transform:
+            continue
+        try:
+            scale *= _hexad_scale(Transform(str(raw_transform)).to_hexad())
+        except Exception:
+            continue
+    return scale
+
+
+def _node_visual_scale(node: inkex.BaseElement) -> float:
+    raw_scale = _raw_transform_chain_scale(node)
+    return raw_scale if raw_scale > 0 else 1.0
+
+
+def _local_font_size_for_visual_css_px(node: inkex.BaseElement, font_size_px: float) -> float:
+    transform_scale = _node_visual_scale(node)
+    if transform_scale <= 0:
+        transform_scale = 1.0
+    return font_size_px * _root_user_units_per_css_px(node) / transform_scale
+
+
+def _text_size_targets(node: inkex.BaseElement) -> list[inkex.BaseElement]:
+    targets: list[inkex.BaseElement] = []
+    if _tag_name(node) in {"text", "tspan"}:
+        targets.append(node)
+    try:
+        for descendant in node.iterdescendants():
+            if _tag_name(descendant) in {"text", "tspan"}:
+                targets.append(descendant)
+    except Exception:
+        pass
+    return targets or [node]
+
+
+def _scale_path_glyph_to_font_size(node: inkex.BaseElement, font_size_px: float) -> None:
+    tag = _tag_name(node)
+    if tag not in {"path", "polygon", "polyline", "use"}:
+        return
+    try:
+        bbox = node.bounding_box()
+    except Exception:
+        return
+    current_height = float(getattr(bbox, "height", 0.0) or 0.0)
+    if current_height <= 0:
+        return
+    target_height = _local_font_size_for_visual_css_px(node, font_size_px) * 0.85
+    if target_height <= 0:
+        return
+    factor = max(0.05, min(20.0, target_height / current_height))
+    _font_debug_log(
+        "scale_text_glyph "
+        f"id={node.get('id')} tag={tag} requested_px={font_size_px:g} "
+        f"current_h={current_height:g} target_h={target_height:g} factor={factor:g}"
+    )
+    _scale_selected([node], factor * 100.0)
+
+
 def _set_font_size(nodes: list[inkex.BaseElement], font_size_px: float) -> None:
     if font_size_px <= 0:
         raise inkex.AbortExtension("Font size must be greater than zero.")
     for node in nodes:
-        _set_style_value(node, "font-size", f"{font_size_px}px")
+        for target in _text_size_targets(node):
+            if _tag_name(target) not in {"text", "tspan"}:
+                _scale_path_glyph_to_font_size(target, font_size_px)
+                continue
+            # Action params use CSS pixels (pt * 4/3). The SVG document may use
+            # mm-like user units, and imported groups may already scale px to
+            # document units, so convert the requested visual size into the
+            # target's local font-size value.
+            visual_scale = _node_visual_scale(target)
+            unit_scale = _root_user_units_per_css_px(target)
+            local_font_size_px = _local_font_size_for_visual_css_px(target, font_size_px)
+            _font_debug_log(
+                "set_font_size "
+                f"id={target.get('id')} tag={_tag_name(target)} requested_px={font_size_px:g} "
+                f"unit_scale={unit_scale:g} visual_scale={visual_scale:g} local_px={local_font_size_px:g}"
+            )
+            _set_style_value(target, "font-size", f"{local_font_size_px}px")
 
 
 def _set_corner_radius(nodes: list[inkex.BaseElement], corner_radius: float) -> None:
@@ -220,6 +523,83 @@ def _set_corner_radius(nodes: list[inkex.BaseElement], corner_radius: float) -> 
 def _set_dash_pattern(nodes: list[inkex.BaseElement], dash_pattern: str) -> None:
     for node in nodes:
         _set_style_value(node, "stroke-dasharray", dash_pattern)
+
+
+def _selection_bbox(nodes: list[inkex.BaseElement]) -> tuple[float, float, float, float]:
+    if not nodes:
+        raise inkex.AbortExtension("This action requires at least one selected object.")
+    lefts: list[float] = []
+    tops: list[float] = []
+    rights: list[float] = []
+    bottoms: list[float] = []
+    for node in nodes:
+        bbox = node.bounding_box()
+        lefts.append(float(bbox.left))
+        tops.append(float(bbox.top))
+        rights.append(float(bbox.left + bbox.width))
+        bottoms.append(float(bbox.top + bbox.height))
+    return min(lefts), min(tops), max(rights), max(bottoms)
+
+
+def _set_selection_position(nodes: list[inkex.BaseElement], x: float, y: float) -> None:
+    left, top, _, _ = _selection_bbox(nodes)
+    _move_selected(nodes, x - left, y - top)
+
+
+def _align_selection(nodes: list[inkex.BaseElement], mode: str) -> None:
+    if len(nodes) < 2:
+        raise inkex.AbortExtension("Align requires at least two selected objects.")
+    left, top, right, bottom = _selection_bbox(nodes)
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    for node in nodes:
+        bbox = node.bounding_box()
+        node_left = float(bbox.left)
+        node_top = float(bbox.top)
+        node_right = float(bbox.left + bbox.width)
+        node_bottom = float(bbox.top + bbox.height)
+        node_center_x = (node_left + node_right) / 2.0
+        node_center_y = (node_top + node_bottom) / 2.0
+        delta_x = 0.0
+        delta_y = 0.0
+        if mode == "left":
+            delta_x = left - node_left
+        elif mode == "center":
+            delta_x = center_x - node_center_x
+        elif mode == "right":
+            delta_x = right - node_right
+        elif mode == "top":
+            delta_y = top - node_top
+        elif mode == "middle":
+            delta_y = center_y - node_center_y
+        elif mode == "bottom":
+            delta_y = bottom - node_bottom
+        _move_selected([node], delta_x, delta_y)
+
+
+def _distribute_selection(nodes: list[inkex.BaseElement], mode: str) -> None:
+    if len(nodes) < 3:
+        raise inkex.AbortExtension("Distribute requires at least three selected objects.")
+    if mode == "horizontal":
+        ordered = sorted(nodes, key=lambda node: float(node.bounding_box().left))
+        first = ordered[0].bounding_box()
+        last = ordered[-1].bounding_box()
+        start = float(first.left)
+        end = float(last.left)
+        step = (end - start) / (len(ordered) - 1)
+        for index, node in enumerate(ordered):
+            bbox = node.bounding_box()
+            _move_selected([node], (start + (step * index)) - float(bbox.left), 0.0)
+        return
+    ordered = sorted(nodes, key=lambda node: float(node.bounding_box().top))
+    first = ordered[0].bounding_box()
+    last = ordered[-1].bounding_box()
+    start = float(first.top)
+    end = float(last.top)
+    step = (end - start) / (len(ordered) - 1)
+    for index, node in enumerate(ordered):
+        bbox = node.bounding_box()
+        _move_selected([node], 0.0, (start + (step * index)) - float(bbox.top))
 
 
 def _set_z_order(nodes: list[inkex.BaseElement], order: str) -> list[inkex.BaseElement]:
@@ -574,6 +954,9 @@ def _create_layer_bar(
 
 
 SELECTION_REQUIRED_ACTIONS = {
+    "align_selection",
+    "distribute_selection",
+    "set_selection_position",
     "set_fill_none",
     "set_fill_color",
     "set_font_size",
@@ -652,12 +1035,31 @@ def apply_action_plan(
             _set_opacity(selected, float(action.params["opacity_percent"]))
             continue
 
+        if action.kind == "set_tick_length":
+            selected = _target_nodes(svg, action.params)
+            _set_tick_length(svg, selected, float(action.params["length_px"]))
+            continue
+
+        if action.kind == "set_tick_thickness":
+            selected = _target_nodes(svg, action.params)
+            _set_stroke_width(selected, float(action.params["stroke_width_px"]))
+            continue
+
+        if action.kind == "set_tick_label_size":
+            selected = _target_nodes(svg, action.params)
+            _set_font_size(selected, float(action.params["font_size_px"]))
+            continue
+
         if action.kind == "move_selection":
             _move_selected(
                 selected,
                 float(action.params["delta_x_px"]),
                 float(action.params["delta_y_px"]),
             )
+            continue
+
+        if action.kind == "set_selection_position":
+            _set_selection_position(selected, float(action.params["x"]), float(action.params["y"]))
             continue
 
         if action.kind == "duplicate_selection":
@@ -687,6 +1089,14 @@ def apply_action_plan(
             _rotate_selected(selected, float(action.params["degrees"]))
             continue
 
+        if action.kind == "align_selection":
+            _align_selection(selected, str(action.params["text"]))
+            continue
+
+        if action.kind == "distribute_selection":
+            _distribute_selection(selected, str(action.params["text"]))
+            continue
+
         if action.kind == "rename_selection":
             prefix = str(action.params["prefix"])
             if not re.fullmatch(r"[a-z0-9_-]+", prefix):
@@ -694,7 +1104,7 @@ def apply_action_plan(
             _rename_selected(selected, prefix)
             continue
 
-        if action.kind == "select_object":
+        if action.kind in {"select_object", "select_targets"}:
             selected = _target_nodes(svg, action.params)
             continue
 
@@ -710,6 +1120,22 @@ def apply_action_plan(
                 selected,
                 float(action.params["delta_x_px"]),
                 float(action.params["delta_y_px"]),
+            )
+            continue
+
+        if action.kind == "set_object_position":
+            selected = _target_nodes(svg, action.params)
+            _set_selection_position(selected, float(action.params["x"]), float(action.params["y"]))
+            continue
+
+        if action.kind == "set_object_size":
+            selected = _target_nodes(svg, action.params)
+            width = action.params.get("width")
+            height = action.params.get("height")
+            _resize_selected(
+                selected,
+                float(width) if width is not None else None,
+                float(height) if height is not None else None,
             )
             continue
 

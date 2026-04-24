@@ -3,8 +3,52 @@ from __future__ import annotations
 import subprocess
 
 
-def _copilot_menu_script(menu_item_name: str) -> str:
+def _copilot_menu_script(menu_item_name: str, *, auto_confirm: bool = False) -> str:
+    auto_confirm_block = ""
+    if auto_confirm:
+        auto_confirm_block = """
+\t\trepeat 20 times
+\t\t\ttry
+\t\t\t\tif exists sheet 1 of window 1 then
+\t\t\t\t\tif exists button \"OK\" of sheet 1 of window 1 then
+\t\t\t\t\t\tclick button \"OK\" of sheet 1 of window 1
+\t\t\t\t\t\texit repeat
+\t\t\t\t\tend if
+\t\t\t\t\tif exists button \"Apply\" of sheet 1 of window 1 then
+\t\t\t\t\t\tclick button \"Apply\" of sheet 1 of window 1
+\t\t\t\t\t\texit repeat
+\t\t\t\t\tend if
+\t\t\t\tend if
+\t\t\tend try
+\t\t\ttry
+\t\t\t\tif exists button \"OK\" of window 1 then
+\t\t\t\t\tclick button \"OK\" of window 1
+\t\t\t\t\texit repeat
+\t\t\t\tend if
+\t\t\t\tif exists button \"Apply\" of window 1 then
+\t\t\t\t\tclick button \"Apply\" of window 1
+\t\t\t\t\texit repeat
+\t\t\t\tend if
+\t\t\tend try
+\t\t\tdelay 0.15
+\t\tend repeat
+"""
     return f'''
+on findMenuItemByName(parentMenu, targetName)
+\ttell application "System Events"
+\t\trepeat with candidateItem in menu items of parentMenu
+\t\t\ttry
+\t\t\t\tif name of candidateItem is targetName then return candidateItem
+\t\t\tend try
+\t\t\ttry
+\t\t\t\tset nestedItem to my findMenuItemByName(menu 1 of candidateItem, targetName)
+\t\t\t\tif nestedItem is not missing value then return nestedItem
+\t\t\tend try
+\t\tend repeat
+\tend tell
+\treturn missing value
+end findMenuItemByName
+
 tell application "Inkscape" to activate
 delay 0.5
 tell application "System Events"
@@ -23,26 +67,37 @@ tell application "System Events"
 \t\tend if
 \t\tclick menu bar item "Extensions" of menu bar 1
 \t\tdelay 0.2
-\t\tclick menu item "Copilot" of menu 1 of menu bar item "Extensions" of menu bar 1
-\t\tdelay 0.2
-\t\tset targetItem to menu item "{menu_item_name}" of menu 1 of menu item "Copilot" of menu 1 of menu bar item "Extensions" of menu bar 1
-\t\tignoring application responses
-\t\t\tperform action "AXPress" of targetItem
-\t\tend ignoring
+\t\tset extensionsMenu to menu 1 of menu bar item "Extensions" of menu bar 1
+\t\tset targetItem to missing value
+\t\ttry
+\t\t\tif exists menu item "Copilot" of extensionsMenu then
+\t\t\t\tclick menu item "Copilot" of extensionsMenu
+\t\t\t\tdelay 0.2
+\t\t\t\tset targetItem to my findMenuItemByName(menu 1 of menu item "Copilot" of extensionsMenu, "{menu_item_name}")
+\t\t\tend if
+\t\tend try
+\t\tif targetItem is missing value then
+\t\t\tset targetItem to my findMenuItemByName(extensionsMenu, "{menu_item_name}")
+\t\tend if
+\t\tif targetItem is missing value then
+\t\t\terror "Could not find Inkscape extension menu item: {menu_item_name}"
+\t\tend if
+\t\tperform action "AXPress" of targetItem
+{auto_confirm_block}\t
 \tend tell
 end tell
 '''
 
 
-def trigger_copilot_menu_item(menu_item_name: str) -> tuple[bool, str | None]:
-    script = _copilot_menu_script(menu_item_name)
+def trigger_copilot_menu_item(menu_item_name: str, *, auto_confirm: bool = False) -> tuple[bool, str | None]:
+    script = _copilot_menu_script(menu_item_name, auto_confirm=auto_confirm)
     try:
         result = subprocess.run(
             ["osascript", "-e", script],
             check=False,
             capture_output=True,
             text=True,
-            timeout=2.5,
+            timeout=5.0 if auto_confirm else 2.5,
         )
     except subprocess.TimeoutExpired:
         # On macOS, System Events can block waiting for Inkscape to finish the
@@ -59,7 +114,7 @@ def trigger_copilot_menu_item(menu_item_name: str) -> tuple[bool, str | None]:
 
 
 def trigger_apply_pending_jobs() -> tuple[bool, str | None]:
-    return trigger_copilot_menu_item("Apply Copilot Changes")
+    return trigger_copilot_menu_item("Apply Copilot Changes", auto_confirm=True)
 
 
 def trigger_sync_document_state() -> tuple[bool, str | None]:

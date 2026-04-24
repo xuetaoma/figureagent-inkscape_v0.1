@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import threading
 import time
 import webbrowser
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 from urllib.parse import urlparse
@@ -27,7 +30,7 @@ from .defaults import DEFAULT_PAGE_HEIGHT_PX, DEFAULT_PAGE_WIDTH_PX, default_doc
 from .inkscape_control import trigger_apply_pending_jobs
 from .interpreter import PromptError
 from .openai_bridge import OpenAIPlannerError, plan_with_openai, stream_chat_reply
-from .planner import DocumentContext, DocumentObject, SelectionItem, build_fallback_plan
+from .planner import DocumentContext, DocumentObject, PanelInfo, SelectionItem, build_fallback_plan
 from .schema import ActionPlan
 
 
@@ -210,6 +213,59 @@ INDEX_HTML = """<!doctype html>
       font-size: 13px;
       margin-top: 10px;
     }
+    .command-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+      padding: 10px 14px;
+      border-radius: 16px;
+      background: rgba(15,118,110,.08);
+      border: 1px solid rgba(15,118,110,.16);
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .command-status[hidden] {
+      display: none;
+    }
+    .command-copy {
+      min-width: 0;
+      flex: 1;
+    }
+    .command-label {
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .command-text {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .command-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.7);
+      border: 1px solid rgba(30,42,47,.08);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .command-chip.running {
+      color: #9a6700;
+    }
+    .command-chip.done {
+      color: #166534;
+    }
+    .command-chip.error {
+      color: #b91c1c;
+    }
     .dot {
       width: 8px; height: 8px; border-radius: 999px; background: var(--accent-2);
       animation: pulse 1.1s infinite ease-in-out;
@@ -302,12 +358,22 @@ INDEX_HTML = """<!doctype html>
     <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
     <div class="attachments" id="attachments"></div>
     <div class="busy" id="busy" hidden><span class="dot"></span><span>Copilot is working in the background. You can keep typing.</span></div>
+    <div class="command-status" id="command-status" hidden>
+      <div class="command-copy">
+        <span class="command-label">Last Command</span>
+        <div class="command-text" id="command-text"></div>
+      </div>
+      <div class="command-chip" id="command-chip"></div>
+    </div>
   </footer>
   <script>
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
     const queueEl = document.getElementById('queue');
     const busyEl = document.getElementById('busy');
+    const commandStatusEl = document.getElementById('command-status');
+    const commandTextEl = document.getElementById('command-text');
+    const commandChipEl = document.getElementById('command-chip');
     const promptEl = document.getElementById('prompt');
     const formEl = document.getElementById('composer');
     const attachEl = document.getElementById('attach');
@@ -347,6 +413,18 @@ INDEX_HTML = """<!doctype html>
         || 'No document attached';
       const pageWidth = status.document_context?.width ?? '—';
       const pageHeight = status.document_context?.height ?? '—';
+      const verification = status.execution_result?.verification;
+      const publicationQa = verification?.publication_qa;
+      const verificationText = verification
+        ? `${verification.status || 'unknown'} · Δ ${(verification.changed_object_ids || []).length} · + ${(verification.created_object_ids || []).length} · - ${(verification.deleted_object_ids || []).length}`
+        : '—';
+      const panels = status.document_context?.panels || [];
+      const panelText = panels.length
+        ? panels.map((panel) => panel.label).join(', ')
+        : '—';
+      const qaText = publicationQa
+        ? `${publicationQa.status || 'unknown'} · ${(publicationQa.warnings || []).length} warning(s)`
+        : '—';
       const stats = [
         ['Document', documentName],
         ['Page size', `${pageWidth} × ${pageHeight} px`],
@@ -355,8 +433,11 @@ INDEX_HTML = """<!doctype html>
         ['Bridge', status.bridge_status?.state ?? 'unknown'],
         ['Session', status.session_state?.active ? (status.session_state?.worker_state ?? 'active') : 'inactive'],
         ['Selection count', String(status.document_context?.selection_count ?? 0)],
+        ['Panels', panelText],
         ['Planned step', status.planned_step?.ready_to_apply ? 'Ready' : 'None'],
         ['Execution', status.execution_result?.state ?? 'idle'],
+        ['Verification', verificationText],
+        ['Visual QA', qaText],
         ['Brief', status.working_brief ? 'Active' : 'None'],
         ['Context', status.sync_warning ?? 'Fresh or last-synced'],
         ['Last error', status.execution_result?.error ?? status.bridge_status?.last_error ?? '—'],
@@ -369,6 +450,25 @@ INDEX_HTML = """<!doctype html>
         statusEl.appendChild(row);
       }
       busyEl.hidden = !status.processing;
+      renderCommandStatus(status);
+    }
+
+    function renderCommandStatus(status) {
+      const command = status.last_command;
+      if (!command || !command.prompt) {
+        commandStatusEl.hidden = true;
+        commandTextEl.textContent = '';
+        commandChipEl.textContent = '';
+        commandChipEl.className = 'command-chip';
+        return;
+      }
+      commandStatusEl.hidden = false;
+      commandTextEl.textContent = command.prompt;
+      const stage = command.stage || 'Idle';
+      const running = Boolean(command.running);
+      const failed = Boolean(command.failed);
+      commandChipEl.textContent = running ? `${stage}...` : stage;
+      commandChipEl.className = `command-chip ${failed ? 'error' : (running ? 'running' : 'done')}`;
     }
 
     function renderQueue(data) {
@@ -418,6 +518,31 @@ INDEX_HTML = """<!doctype html>
         reader.onerror = () => reject(reader.error || new Error('Could not read image'));
         reader.readAsDataURL(file);
       });
+    }
+
+    function loadImage(dataUrl) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('Could not decode image'));
+        img.src = dataUrl;
+      });
+    }
+
+    async function readCompressedImageDataURL(file) {
+      const original = await readFileAsDataURL(file);
+      const img = await loadImage(original);
+      const maxDimension = 1200;
+      const scale = Math.min(1, maxDimension / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+      if (scale >= 1 && file.size < 1.5 * 1024 * 1024) {
+        return original;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+      canvas.height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.86);
     }
 
     async function refresh() {
@@ -479,7 +604,7 @@ INDEX_HTML = """<!doctype html>
           console.warn('Skipping extra image: maximum 6 images per message.');
           break;
         }
-        const dataUrl = await readFileAsDataURL(file);
+        const dataUrl = await readCompressedImageDataURL(file);
         attachedImages.push({name: file.name, data_url: dataUrl});
       }
       renderAttachments();
@@ -517,6 +642,10 @@ class WebChatState:
     apply_in_flight: bool = False
     last_sync_warning: str | None = None
     working_brief: str | None = None
+    last_command_prompt: str | None = None
+    last_command_stage: str = "Idle"
+    last_command_running: bool = False
+    last_command_failed: bool = False
 
 
 def _default_context() -> DocumentContext:
@@ -539,6 +668,10 @@ class CopilotApp:
             display_text = f"{prompt_text}\n\nAttached image(s): {len(image_urls)}"
         with self.lock:
             self.state.pending_prompt_count += 1
+            self.state.last_command_prompt = prompt_text
+            self.state.last_command_stage = "Queued"
+            self.state.last_command_running = True
+            self.state.last_command_failed = False
             self.state.messages.append(WebMessage(role="user", content=display_text))
             self.state.messages.append(WebMessage(role="assistant", content="", pending=True))
             assistant_index = len(self.state.messages) - 1
@@ -554,6 +687,10 @@ class CopilotApp:
             self.state.apply_in_flight = False
             self.state.last_sync_warning = None
             self.state.working_brief = None
+            self.state.last_command_prompt = None
+            self.state.last_command_stage = "Idle"
+            self.state.last_command_running = False
+            self.state.last_command_failed = False
         reset_state()
 
     def _document_context_from_payload(self, live_context: dict[str, Any]) -> DocumentContext:
@@ -581,10 +718,38 @@ class CopilotApp:
                     fill=item.get("fill"),
                     stroke=item.get("stroke"),
                     bbox=item.get("bbox"),
+                    object_index=item.get("object_index"),
+                    center=item.get("center"),
+                    stroke_width=item.get("stroke_width"),
+                    font_size=item.get("font_size"),
+                    role=item.get("role"),
+                    panel=item.get("panel"),
+                    axis=item.get("axis"),
+                    parent_id=item.get("parent_id"),
+                    group_id=item.get("group_id"),
+                    descendant_count=int(item.get("descendant_count") or 0),
+                    panel_root_id=item.get("panel_root_id"),
+                    label_for=item.get("label_for"),
+                    attached_to=item.get("attached_to"),
+                    text_group_id=item.get("text_group_id"),
+                    glyph_for=item.get("glyph_for"),
+                    line_points=item.get("line_points"),
                 )
                 for item in live_context.get("objects", [])
                 if isinstance(item, dict) and item.get("object_id") and item.get("tag")
             ],
+            panels=[
+                PanelInfo(
+                    label=str(item["label"]),
+                    label_object_id=str(item["label_object_id"]),
+                    label_bbox=item.get("label_bbox"),
+                    bbox=item.get("bbox"),
+                    object_count=int(item.get("object_count") or 0),
+                )
+                for item in live_context.get("panels", [])
+                if isinstance(item, dict) and item.get("label") and item.get("label_object_id")
+            ],
+            visual_snapshot=live_context.get("visual_snapshot") if isinstance(live_context.get("visual_snapshot"), dict) else None,
         )
 
     def _sync_document_context(self) -> tuple[DocumentContext, str | None]:
@@ -599,6 +764,8 @@ class CopilotApp:
                     height=DEFAULT_PAGE_HEIGHT_PX,
                     selection=document.selection,
                     objects=document.objects,
+                    panels=document.panels,
+                    visual_snapshot=document.visual_snapshot,
                 )
             return document, None
 
@@ -629,6 +796,23 @@ class CopilotApp:
                 if last_message != message:
                     self.state.messages.append(WebMessage(role="system", content=message))
 
+            if state == "dispatched":
+                self.state.last_command_stage = "Waiting for Inkscape"
+                self.state.last_command_running = True
+                self.state.last_command_failed = False
+            elif state == "planned":
+                self.state.last_command_stage = "Planned"
+                self.state.last_command_running = True
+                self.state.last_command_failed = False
+            elif state == "applied":
+                self.state.last_command_stage = "Applied"
+                self.state.last_command_running = False
+                self.state.last_command_failed = False
+            elif state == "error":
+                self.state.last_command_stage = "Apply failed"
+                self.state.last_command_running = False
+                self.state.last_command_failed = True
+
             self.state.last_execution_update_at = updated_at
 
         return execution_result
@@ -647,6 +831,12 @@ class CopilotApp:
                 "execution_result": execution_result,
                 "sync_warning": self.state.last_sync_warning,
                 "working_brief": self.state.working_brief,
+                "last_command": {
+                    "prompt": self.state.last_command_prompt,
+                    "stage": self.state.last_command_stage,
+                    "running": self.state.last_command_running,
+                    "failed": self.state.last_command_failed,
+                },
                 "recent_events": read_events(limit=20),
                 "pending_jobs": [job.to_dict() for job in pending_jobs()],
             }
@@ -667,11 +857,29 @@ class CopilotApp:
         if compact:
             self.state.working_brief = compact[-3000:]
 
+    def _visual_snapshot_image_urls(self, document: DocumentContext) -> list[str]:
+        snapshot = document.visual_snapshot or {}
+        png_path = snapshot.get("png_path")
+        if not isinstance(png_path, str) or not png_path:
+            return []
+        path = Path(png_path)
+        try:
+            if not path.exists() or path.stat().st_size > 8_000_000:
+                return []
+            mime = mimetypes.guess_type(str(path))[0] or "image/png"
+            encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+            return [f"data:{mime};base64,{encoded}"]
+        except Exception:
+            return []
+
     def _dispatch_plan_to_inkscape(self, prompt: str, plan: ActionPlan) -> tuple[bool, str]:
         with self.lock:
             if self.state.apply_in_flight:
                 return False, "The current step is already being dispatched to Inkscape."
             self.state.apply_in_flight = True
+            self.state.last_command_stage = "Dispatching to Inkscape"
+            self.state.last_command_running = True
+            self.state.last_command_failed = False
 
         try:
             execution_result = read_execution_result()
@@ -693,6 +901,9 @@ class CopilotApp:
 
             apply_ok, apply_error = trigger_apply_pending_jobs()
             if apply_ok:
+                with self.lock:
+                    self.state.last_command_stage = "Applying in Inkscape"
+                    self.state.last_command_running = True
                 return True, f"Dispatched {job.job_id} to Inkscape."
 
             write_execution_result(
@@ -702,6 +913,9 @@ class CopilotApp:
             )
             with self.lock:
                 self._sync_execution_messages_locked()
+                self.state.last_command_stage = "Dispatch failed"
+                self.state.last_command_running = False
+                self.state.last_command_failed = True
             return False, apply_error or "Could not dispatch planned step to Inkscape."
         finally:
             with self.lock:
@@ -717,6 +931,9 @@ class CopilotApp:
             with self.lock:
                 self.state.pending_prompt_count = max(0, self.state.pending_prompt_count - 1)
                 self.state.processing = True
+                self.state.last_command_stage = "Thinking"
+                self.state.last_command_running = True
+                self.state.last_command_failed = False
                 assistant_message = self.state.messages[assistant_index]
 
             history_snapshot = list(self.state.history)
@@ -745,6 +962,23 @@ class CopilotApp:
             try:
                 self.state.document, sync_warning = self._sync_document_context()
                 current_document = self.state.document
+                visual_image_urls = self._visual_snapshot_image_urls(current_document)
+                planning_image_urls = [*visual_image_urls, *image_urls]
+                if visual_image_urls:
+                    history_snapshot[-1] = {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            *[
+                                {"type": "input_image", "image_url": image_url, "detail": "low"}
+                                for image_url in visual_image_urls
+                            ],
+                            *[
+                                {"type": "input_image", "image_url": image_url, "detail": "auto"}
+                                for image_url in image_urls
+                            ],
+                        ],
+                    }
 
                 for chunk in stream_chat_reply(history_snapshot, current_document, model=self.state.model):
                     assistant_chunks.append(chunk)
@@ -760,7 +994,7 @@ class CopilotApp:
                 plan = plan_with_openai(
                     prompt,
                     current_document,
-                    image_urls=None,
+                    image_urls=planning_image_urls,
                     working_brief=working_brief,
                     model=self.state.model,
                 )
@@ -778,6 +1012,10 @@ class CopilotApp:
                     if plan.actions
                     else "Current step produced no executable actions.",
                 )
+                with self.lock:
+                    self.state.last_command_stage = "Planned"
+                    self.state.last_command_running = bool(plan.actions)
+                    self.state.last_command_failed = False
 
                 with self.lock:
                     self.state.history.append({"role": "user", "content": prompt})
@@ -791,8 +1029,16 @@ class CopilotApp:
                     else:
                         dispatch_message = dispatch_result
                         step_message = "Planned, but not sent to Inkscape."
+                        with self.lock:
+                            self.state.last_command_stage = "Not sent"
+                            self.state.last_command_running = False
+                            self.state.last_command_failed = True
                 else:
                     step_message = "No executable actions."
+                    with self.lock:
+                        self.state.last_command_stage = "No actions"
+                        self.state.last_command_running = False
+                        self.state.last_command_failed = False
             except OpenAIPlannerError as exc:
                 error_message = str(exc)
 
@@ -802,6 +1048,9 @@ class CopilotApp:
                 if error_message:
                     assistant_message.content = f"{assistant_message.content}\n\nError: {error_message}".strip()
                     self.state.messages.append(WebMessage(role="system", content=f"Planner error: {error_message}"))
+                    self.state.last_command_stage = "Planner error"
+                    self.state.last_command_running = False
+                    self.state.last_command_failed = True
                 else:
                     if sync_warning:
                         self.state.messages.append(WebMessage(role="system", content=f"Context note: {sync_warning}"))
@@ -809,6 +1058,19 @@ class CopilotApp:
                         self.state.messages.append(WebMessage(role="system", content=f"Dispatch note: {dispatch_message}"))
                     if step_message:
                         self.state.messages.append(WebMessage(role="system", content=step_message))
+                    if not plan.actions:
+                        self.state.last_command_running = False
+                    elif not dispatch_message:
+                        bridge_state = read_status().get("state")
+                        execution_state = read_execution_result().get("state")
+                        if execution_state == "applied":
+                            self.state.last_command_stage = "Applied"
+                            self.state.last_command_running = False
+                            self.state.last_command_failed = False
+                        elif execution_state == "error" or bridge_state == "error":
+                            self.state.last_command_stage = "Apply failed"
+                            self.state.last_command_running = False
+                            self.state.last_command_failed = True
                 self.state.processing = False
 
 

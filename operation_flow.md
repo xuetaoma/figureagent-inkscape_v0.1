@@ -2,293 +2,176 @@
 
 ## Goal
 
-Inkscape Copilot should feel like a simple conversational assistant for the document the user is already editing in Inkscape.
+Inkscape Copilot should feel like an AI collaborator attached to the document the user is already editing. The user should not need to think about queues, bridge files, worker lifetimes, AppleScript menu triggers, or internal state.
 
-The user experience we want is:
+The desired workflow is:
 
-1. Open an SVG document in Inkscape.
-2. Open the copilot chat.
-3. Start talking to the copilot naturally.
-4. Watch the copilot understand the current document, propose or apply supported edits, and help finish the design.
-
-Default sheet setup for local copilot assumptions:
-- page width: `220 px`
-- page height: `290 px`
-
-The user should not need to think about queues, bridge files, worker lifetimes, or internal implementation details.
+1. Open or create a real Inkscape document.
+2. Open `Extensions -> Copilot -> Open Copilot Chat`.
+3. Chat naturally about the figure.
+4. The copilot observes the current document, reasons about the request, applies supported changes, and reports the result.
 
 ## Product Model
 
-There are three product layers:
+There are three layers:
 
-1. `Chat layer`
-   The browser sidecar is the main interface.
+1. `Browser sidecar`
+   Owns conversation, user intent, concise assistant replies, and planning.
 
-2. `Document-awareness layer`
-   The copilot needs reliable knowledge of the active document, current selection, and recent document state.
+2. `Inkscape worker`
+   Owns document observation and deterministic execution against the real SVG.
 
-3. `Execution layer`
-   The copilot turns prompts into structured actions and applies those actions to the document through a stable Inkscape-side mechanism.
+3. `Bridge state`
+   Carries the latest snapshot, current planned step, running status, and execution result.
 
-## Intended User Flow
-
-### 1. Open Document
-
-The user opens Inkscape and opens or creates a real document window.
-
-Important:
-- The copilot should treat the real document window as the source of truth.
-- The welcome screen is not a usable editing session.
-
-### 2. Open Copilot Chat
-
-The user clicks:
-
-`Extensions -> Copilot -> Open Copilot Chat`
-
-Expected behavior:
-- any older copilot sidecar browser window is closed
-- any older copilot web server instance is stopped
-- a fresh copilot server starts
-- the browser opens a fresh chat window
-
-Important:
-- opening the chat should not destroy an active document-attached session unless explicitly intended
-- opening the chat should feel safe and repeatable
-
-### 3. Attach Copilot To Document
-
-The user clicks:
-
-`Extensions -> Copilot -> Attach Copilot To Document`
-
-Expected behavior:
-- the current Inkscape document becomes the active document for the copilot session
-- the worker records document metadata such as document name, page size, selection, and sync time
-- the session stays associated with that document
-
-Important:
-- attaching the copilot should not wipe the chat state unless we intentionally want a fresh conversation
-- attaching the copilot should not wipe the worker session it just created
-
-### 4. Conversational Work
-
-The user types into the browser chat, for example:
-
-- `make a new square`
-- `make this blue`
-- `align these three objects`
-- `duplicate this 5 times`
-
-Expected behavior for each prompt:
-
-1. refresh the current document context from Inkscape
-2. build the assistant reply using the real current document context
-3. create a structured action plan
-4. apply supported actions to the document
-5. report what happened back into the chat
-
-Important:
-- the assistant response and the action plan should be based on the same synced document context
-- if the copilot cannot do something yet, it should say so clearly
-
-### 5. Continue Iterating
-
-The user keeps chatting while designing.
-
-Expected behavior:
-- the copilot remains conversational
-- the copilot remembers recent turns
-- the copilot stays aware of the currently attached document
-- the user can keep typing while the copilot is thinking or applying changes
-
-## Current Internal Model
-
-Right now the implementation still uses bridge files, pending jobs, and short-lived Inkscape commands.
-
-That is acceptable as an implementation detail for now, but it should not define the product.
-
-Current internal pieces:
-- browser sidecar web UI
-- bridge state in the runtime directory
-- short Inkscape actions such as refresh/apply/attach
-- OpenAI planner and chat generation
-
-The correct mental model is:
-
-- user sees a document-attached assistant
-- code may still use queue/bridge mechanics internally
-
-## Target Architecture
-
-The best architecture for this project is:
-
-### Inkscape Side
-
-One worker should be responsible for:
-
-- observing the active document and writing workspace snapshots
-- executing finalized action plans against the document
-- reporting execution results back to the shared bridge state
-
-The Inkscape side should be the source of truth for what the workspace currently looks like and what changes were actually applied.
-
-### Browser Side
-
-The browser sidecar should own:
-
-- conversation
-- reasoning
-- current-step planning
-- deciding when a finalized step should be applied
-
-The browser side should first understand the workspace snapshot, then think about the user’s request, and only then decide whether to apply the current step.
-
-### Bridge
-
-The bridge should carry:
-
-- the latest workspace snapshot
-- the current planned step
-- the current execution result
-
-It should not be modeled primarily as “raw prompts in, immediate actions out.”
-
-That means the bridge should evolve away from a queue-first design and toward a state-sharing design.
-
-Instead of centering the architecture around:
-
-- queued prompts
-- queued jobs
-
-the bridge should center around:
-
-- latest workspace snapshot
-- current planned step
-- current execution result
-
-This is much closer to a real copilot model.
+The bridge is an implementation detail. The product should feel document-attached, not queue-attached.
 
 ## Menu Surface
 
-The Inkscape menu should stay simple:
+The user-facing menu should remain simple:
 
 - `Open Copilot Chat`
-- `Attach Copilot To Document`
-- `Refresh Copilot Context`
 - `Apply Copilot Changes`
 
-Guidance:
-- these are user-facing verbs
-- names should describe what the user is trying to do, not how the implementation works
+`Open Copilot Chat` starts or refreshes the browser sidecar and captures the active document.
 
-## State Responsibilities
+`Apply Copilot Changes` is a worker entry point. During normal chat use, the browser triggers it after a finalized action plan exists. It remains visible as a fallback/debug command.
+
+## Intended Prompt Flow
+
+When the user presses Send:
+
+1. The sidecar marks the command as running.
+2. The sidecar reads the latest available document context.
+3. The assistant gives a short operational reply.
+4. The planner creates a structured action plan using the same context.
+5. The plan is stored as the current planned step.
+6. Inkscape applies the plan once.
+7. The worker writes a post-apply snapshot and execution result.
+8. The sidecar clears the running indicator and updates session status.
+
+Important constraints:
+
+- Do not trigger apply just because the user typed a message.
+- Trigger apply only after action generation is complete.
+- Do not show raw action JSON in the chat by default.
+- Do not resize the page unless the user explicitly asks.
+
+## Document Awareness
+
+The current document context should include:
+
+- document name/path when available
+- page size
+- current selection summary
+- scene graph objects
+- semantic roles
+- panels and panel bounding boxes
+- relationship hints
+- rendered SVG/PNG snapshots
+- recent execution result and QA findings
+
+The scene graph is the main working model. Manual Inkscape selection is useful, but it should not be the only way the agent can decide what to edit.
+
+## Scene Graph And Targeting
+
+Every visible/editable SVG object should be addressable by:
+
+- `object_id`
+- `object_index`
+- `tag`
+- `text`
+- `bbox`
+- `center`
+- `style`
+- `parent_id`
+- `group_id`
+
+Semantic targeting adds:
+
+- `role`
+- `panel`
+- `axis`
+- `panel_root_id`
+- `label_for`
+- `attached_to`
+- `text_group_id`
+- `glyph_for`
+
+This lets the planner handle prompts like:
+
+- `make ticks in figure a longer`
+- `set panel labels a-g to 12 pt`
+- `connect electrodes to the graphite layer`
+- `make the rho/Omega axis label smaller`
+
+## Visual Snapshot Loop
+
+Structured SVG data is necessary but not sufficient. Publication figures often contain imported plots, text converted to paths, clipping artifacts, and transformed groups.
+
+The worker should write:
+
+- current SVG snapshot
+- current rendered PNG snapshot
+- structured document context
+- verification and QA results
+
+The model can then compare what the SVG says with what the figure visually looks like.
+
+## Responsibilities
 
 ### Browser Sidecar
 
 Responsible for:
-- showing the conversation
-- showing current document/session status
-- collecting prompts
-- showing planning and execution feedback
+
+- conversation
+- brief assistant replies
+- current-step planning
+- showing running/session state
+- sending finalized plans to Inkscape
 
 Not responsible for:
-- pretending it knows the document without a sync step
+
+- directly mutating the SVG
+- guessing document state without a sync
 
 ### Inkscape Worker
 
 Responsible for:
-- syncing real document context
-- applying supported actions to the current document
-- reporting session metadata and execution results
+
+- reading the real current SVG
+- extracting scene graph snapshots
+- rendering visual snapshots
+- applying supported actions deterministically
+- writing execution results
 
 Not responsible for:
-- owning the full conversational experience
+
+- open-ended conversation
+- inferring user intent from raw prompts during execution
 
 ### Bridge State
 
 Responsible for:
-- sharing current document context
-- sharing session state
-- sharing execution status between browser and Inkscape
+
+- `document_context.json`
+- `planned_step.json`
+- `execution_result.json`
+- status/session metadata
+- visual snapshots
 
 Not responsible for:
-- becoming the user-facing product model
 
-## Design Principles
-
-1. `Chat first`
-   The chat is the primary user interface.
-
-2. `Document attached`
-   The copilot should always feel tied to the current document, not to an abstract queue.
-
-3. `Repeatable launch`
-   Opening the copilot again should be safe.
-
-4. `Fresh sync before action`
-   Before the assistant plans or acts, it should sync the real current document state.
-
-5. `Observe, then think, then act`
-   The copilot should first understand the workspace, then reason about the current step, and only then apply changes.
-
-6. `Clear limitation handling`
-   If a request is not yet supported, the copilot should say that plainly and suggest the closest supported path.
-
-7. `Implementation detail separation`
-   Internal bridge mechanics should stay behind the scenes.
-
-## Known Prototype Gaps
-
-These are the gaps we already know about:
-
-1. macOS Inkscape runtime is fragile for embedded Python behaviors.
-2. Menu automation is not reliable enough to be the long-term backbone.
-3. The document sync/apply path still depends on short command triggers.
-4. Not all desired Inkscape actions are implemented yet.
-5. Some product wording still reflects the earlier queue-first prototype.
-
-## Near-Term Execution Plan
-
-### Phase 1: Stabilize The Current Product Flow
-
-Focus:
-- make `Open Copilot Chat` reliable
-- make `Attach Copilot To Document` preserve session state
-- make sync happen before assistant response and planning
-- keep runtime paths dynamic instead of hardcoded
-
-### Phase 2: Strengthen Document Attachment
-
-Focus:
-- make document attachment more explicit and reliable
-- surface document name and session status clearly in the sidecar
-- reduce dependence on fragile UI automation
-- make the Inkscape-side worker responsible for writing durable workspace snapshots
-
-### Phase 3: Expand Action Coverage
-
-Focus:
-- refactor the bridge around snapshots, planned steps, and execution results
-- separate observe, think, and act more explicitly in the browser flow
-- support more common Inkscape editing operations
-- improve multi-step plans
-- improve selection-aware edits and creation workflows
-
-### Phase 4: Make The Copilot Feel Native
-
-Focus:
-- smooth live feedback
-- stronger session continuity
-- fewer manual “helper” steps for the user
+- becoming the visible product model
 
 ## Definition Of Success
 
-This project is succeeding when the user experience feels like this:
+The project is succeeding when the workflow feels like:
 
 - `I open my SVG.`
 - `I open Copilot Chat.`
 - `I ask for what I want.`
-- `The copilot helps me make the design happen.`
+- `The copilot selects the right thing, changes it, verifies it, and keeps going.`
 
-If the user has to think in terms of internal queues, stale sessions, extension runtime quirks, or which hidden command should run next, then the product model is still wrong.
+If the user has to reason about hidden queues, stale sessions, manual apply clicks, or internal extension commands, the product model still needs work.
+

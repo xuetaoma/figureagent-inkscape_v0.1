@@ -27,16 +27,25 @@ SUPPORTED_ACTION_KINDS = {
     "set_stroke_none",
     "set_z_order",
     "set_opacity",
+    "set_tick_label_size",
+    "set_tick_length",
+    "set_tick_thickness",
     "set_stroke_color",
     "set_stroke_width",
     "move_selection",
     "resize_selection",
     "scale_selection",
+    "select_targets",
     "rename_selection",
     "delete_object",
     "move_object",
     "replace_text",
     "select_object",
+    "align_selection",
+    "distribute_selection",
+    "set_object_position",
+    "set_object_size",
+    "set_selection_position",
     "set_object_fill_color",
     "set_object_fill_none",
     "set_object_font_size",
@@ -56,6 +65,28 @@ def _numeric_or_default(params: dict[str, Any], key: str, default: float) -> Non
 def _string_or_default(params: dict[str, Any], key: str, default: str) -> None:
     if not isinstance(params.get(key), str):
         params[key] = default
+
+
+def _has_target_selector(params: dict[str, Any]) -> bool:
+    string_selector = any(
+        isinstance(params.get(key), str) and str(params.get(key)).strip()
+        for key in (
+            "object_id",
+            "text",
+            "role",
+            "panel",
+            "axis",
+            "tag",
+            "parent_id",
+            "group_id",
+            "panel_root_id",
+            "label_for",
+            "attached_to",
+            "text_group_id",
+            "glyph_for",
+        )
+    )
+    return string_selector or isinstance(params.get("object_index"), (int, float))
 
 
 @dataclass(frozen=True)
@@ -95,6 +126,21 @@ class Action:
         elif kind == "set_opacity":
             if not isinstance(params.get("opacity_percent"), (int, float)):
                 raise ValueError("set_opacity requires numeric opacity_percent")
+        elif kind == "set_tick_length":
+            if not _has_target_selector(params):
+                raise ValueError("set_tick_length requires params.object_id, text, role, panel, or axis")
+            if not isinstance(params.get("length_px"), (int, float)):
+                raise ValueError("set_tick_length requires numeric length_px")
+        elif kind == "set_tick_thickness":
+            if not _has_target_selector(params):
+                raise ValueError("set_tick_thickness requires params.object_id, text, role, panel, or axis")
+            if not isinstance(params.get("stroke_width_px"), (int, float)):
+                raise ValueError("set_tick_thickness requires numeric stroke_width_px")
+        elif kind == "set_tick_label_size":
+            if not _has_target_selector(params):
+                raise ValueError("set_tick_label_size requires params.object_id, text, role, panel, or axis")
+            if not isinstance(params.get("font_size_px"), (int, float)):
+                raise ValueError("set_tick_label_size requires numeric font_size_px")
         elif kind == "set_stroke_width":
             if not isinstance(params.get("stroke_width_px"), (int, float)):
                 raise ValueError("set_stroke_width requires numeric stroke_width_px")
@@ -103,6 +149,9 @@ class Action:
                 params.get("delta_y_px"), (int, float)
             ):
                 raise ValueError("move_selection requires numeric delta_x_px and delta_y_px")
+        elif kind == "set_selection_position":
+            if not isinstance(params.get("x"), (int, float)) or not isinstance(params.get("y"), (int, float)):
+                raise ValueError("set_selection_position requires numeric x and y")
         elif kind == "duplicate_selection":
             if not isinstance(params.get("count"), (int, float)):
                 raise ValueError("duplicate_selection requires numeric count")
@@ -121,47 +170,65 @@ class Action:
         elif kind == "rotate_selection":
             if not isinstance(params.get("degrees"), (int, float)):
                 raise ValueError("rotate_selection requires numeric degrees")
+        elif kind == "align_selection":
+            if str(params.get("text")) not in {"left", "center", "right", "top", "middle", "bottom"}:
+                raise ValueError("align_selection requires params.text to be left, center, right, top, middle, or bottom")
+        elif kind == "distribute_selection":
+            if str(params.get("text")) not in {"horizontal", "vertical"}:
+                raise ValueError("distribute_selection requires params.text to be horizontal or vertical")
         elif kind == "rename_selection":
             if not isinstance(params.get("prefix"), str):
                 raise ValueError("rename_selection requires params.prefix")
-        elif kind == "select_object":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("select_object requires params.object_id or params.text")
+        elif kind in {"select_object", "select_targets"}:
+            if not _has_target_selector(params):
+                raise ValueError(
+                    f"{kind} requires params.object_id, object_index, text, role, panel, axis, tag, parent_id, group_id, panel_root_id, label_for, attached_to, text_group_id, or glyph_for"
+                )
         elif kind == "delete_object":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("delete_object requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError("delete_object requires params.object_id, text, role, panel, or axis")
         elif kind == "move_object":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("move_object requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError("move_object requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("delta_x_px"), (int, float)) or not isinstance(
                 params.get("delta_y_px"), (int, float)
             ):
                 raise ValueError("move_object requires numeric delta_x_px and delta_y_px")
+        elif kind == "set_object_position":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_position requires params.object_id, text, role, panel, or axis")
+            if not isinstance(params.get("x"), (int, float)) or not isinstance(params.get("y"), (int, float)):
+                raise ValueError("set_object_position requires numeric x and y")
+        elif kind == "set_object_size":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_size requires params.object_id, text, role, panel, or axis")
+            if not isinstance(params.get("width"), (int, float)) and not isinstance(params.get("height"), (int, float)):
+                raise ValueError("set_object_size requires numeric width and/or height")
         elif kind in {"set_object_fill_color", "set_object_stroke_color"}:
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError(f"{kind} requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError(f"{kind} requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("hex"), str):
                 raise ValueError(f"{kind} requires params.hex")
         elif kind in {"set_object_fill_none", "set_object_stroke_none"}:
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError(f"{kind} requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError(f"{kind} requires params.object_id, text, role, panel, or axis")
         elif kind == "set_object_dash_pattern":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("set_object_dash_pattern requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError("set_object_dash_pattern requires params.object_id, text, role, panel, or axis")
             _string_or_default(params, "dash_pattern", "2,2")
         elif kind == "set_object_stroke_width":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("set_object_stroke_width requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError("set_object_stroke_width requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("stroke_width_px"), (int, float)):
                 raise ValueError("set_object_stroke_width requires numeric stroke_width_px")
         elif kind == "set_object_font_size":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("set_object_font_size requires params.object_id or params.text")
+            if not _has_target_selector(params):
+                raise ValueError("set_object_font_size requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("font_size_px"), (int, float)):
                 raise ValueError("set_object_font_size requires numeric font_size_px")
         elif kind == "replace_text":
-            if not isinstance(params.get("object_id"), str) and not isinstance(params.get("text"), str):
-                raise ValueError("replace_text requires params.object_id or existing params.text")
+            if not _has_target_selector(params):
+                raise ValueError("replace_text requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("new_text"), str) or not params.get("new_text").strip():
                 raise ValueError("replace_text requires params.new_text")
         elif kind == "create_rectangle":
@@ -278,16 +345,30 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "delta_y_px": {"type": ["number", "null"]},
                                 "fill_hex": {"type": ["string", "null"]},
                                 "font_size_px": {"type": ["number", "null"]},
+                                "group_id": {"type": ["string", "null"]},
+                                "panel_root_id": {"type": ["string", "null"]},
+                                "label_for": {"type": ["string", "null"]},
+                                "attached_to": {"type": ["string", "null"]},
+                                "text_group_id": {"type": ["string", "null"]},
+                                "glyph_for": {"type": ["string", "null"]},
                                 "height": {"type": ["number", "null"]},
+                                "include_descendants": {"type": ["boolean", "null"]},
                                 "inner_radius": {"type": ["number", "null"]},
+                                "length_px": {"type": ["number", "null"]},
                                 "opacity_percent": {"type": ["number", "null"]},
                                 "object_id": {"type": ["string", "null"]},
+                                "object_index": {"type": ["integer", "null"]},
+                                "axis": {"type": ["string", "null"]},
+                                "panel": {"type": ["string", "null"]},
+                                "parent_id": {"type": ["string", "null"]},
                                 "percent": {"type": ["number", "null"]},
                                 "prefix": {"type": ["string", "null"]},
                                 "radius": {"type": ["number", "null"]},
                                 "new_text": {"type": ["string", "null"]},
+                                "role": {"type": ["string", "null"]},
                                 "stroke_hex": {"type": ["string", "null"]},
                                 "stroke_width_px": {"type": ["number", "null"]},
+                                "tag": {"type": ["string", "null"]},
                                 "text": {"type": ["string", "null"]},
                                 "text_hex": {"type": ["string", "null"]},
                                 "width": {"type": ["number", "null"]},
@@ -312,16 +393,30 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "delta_y_px",
                                 "fill_hex",
                                 "font_size_px",
+                                "group_id",
+                                "panel_root_id",
+                                "label_for",
+                                "attached_to",
+                                "text_group_id",
+                                "glyph_for",
                                 "height",
+                                "include_descendants",
                                 "inner_radius",
+                                "length_px",
                                 "opacity_percent",
                                 "object_id",
+                                "object_index",
+                                "axis",
+                                "panel",
+                                "parent_id",
                                 "percent",
                                 "prefix",
                                 "radius",
                                 "new_text",
+                                "role",
                                 "stroke_hex",
                                 "stroke_width_px",
+                                "tag",
                                 "text",
                                 "text_hex",
                                 "width",
