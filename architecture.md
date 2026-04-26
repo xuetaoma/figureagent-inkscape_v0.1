@@ -1,4 +1,4 @@
-# Inkscape Copilot Architecture
+# FigureAgent for Inkscape Architecture
 
 ## Purpose
 

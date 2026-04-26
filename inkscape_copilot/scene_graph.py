@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from statistics import median
 from typing import Any
 
 from .planner import DocumentObject, PanelInfo
@@ -295,6 +296,51 @@ def _scene_priority(item: DocumentObject) -> tuple[int, str]:
     return (role_priority.get(item.role or "", 20), item.object_id)
 
 
+def _bbox_area(bbox: dict[str, float] | None) -> float:
+    if not bbox:
+        return 0.0
+    return max(0.0, float(bbox.get("width") or 0.0)) * max(0.0, float(bbox.get("height") or 0.0))
+
+
+def _center_distance_to_label(item: DocumentObject, label: DocumentObject) -> float:
+    return _distance(_bbox_center(item.bbox), _bbox_center(label.bbox)) ** 0.5
+
+
+def _nearest_label_distance(label: DocumentObject, labels: list[DocumentObject]) -> float | None:
+    center = _bbox_center(label.bbox)
+    distances = [
+        _distance(center, _bbox_center(other.bbox)) ** 0.5
+        for other in labels
+        if other.object_id != label.object_id and other.bbox
+    ]
+    distances = [value for value in distances if value > 0]
+    return min(distances) if distances else None
+
+
+def _robust_panel_members(
+    label: DocumentObject,
+    labels: list[DocumentObject],
+    candidates: list[DocumentObject],
+) -> list[DocumentObject]:
+    if len(candidates) < 4:
+        return candidates
+
+    areas = [_bbox_area(item.bbox) for item in candidates if _bbox_area(item.bbox) > 0]
+    median_area = float(median(areas)) if areas else 0.0
+    nearest_label_gap = _nearest_label_distance(label, labels)
+    max_distance = nearest_label_gap * 1.35 if nearest_label_gap else None
+
+    kept: list[DocumentObject] = []
+    for item in candidates:
+        area = _bbox_area(item.bbox)
+        if median_area > 0 and area > median_area * 40.0 and item.role not in {"panel_root", "frame"}:
+            continue
+        if max_distance and _center_distance_to_label(item, label) > max_distance:
+            continue
+        kept.append(item)
+    return kept or candidates
+
+
 def detect_panels(objects: list[DocumentObject]) -> list[PanelInfo]:
     labels = sorted(
         [item for item in objects if item.role == "panel_label" and item.text and len(item.text.strip()) == 1],
@@ -303,7 +349,7 @@ def detect_panels(objects: list[DocumentObject]) -> list[PanelInfo]:
     panels: list[PanelInfo] = []
     for label in labels:
         panel_name = (label.text or "").strip()
-        members = [
+        candidates = [
             item
             for item in objects
             if item.panel == panel_name
@@ -312,6 +358,7 @@ def detect_panels(objects: list[DocumentObject]) -> list[PanelInfo]:
             and _reasonable_panel_member_bbox(item.bbox)
             and item.role not in {"panel_label", "panel_root"}
         ]
+        members = _robust_panel_members(label, labels, candidates)
         member_boxes = [item.bbox for item in members if item.bbox]
         if label.bbox:
             member_boxes.append(label.bbox)

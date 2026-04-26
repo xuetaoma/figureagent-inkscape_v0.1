@@ -1,10 +1,10 @@
-# Human-Level Inkscape Copilot Roadmap
+# Human-Level FigureAgent for Inkscape Roadmap
 
 ## Product Goal
 
 The goal is a real editor agent, not an assistant that only gives advice.
 
-For publication figures, the copilot should be able to do the same classes of work a skilled human does in Inkscape:
+For publication figures, FigureAgent should be able to do the same classes of work a skilled human does in Inkscape:
 
 - inspect the current figure
 - identify the correct object or region
@@ -16,7 +16,7 @@ For publication figures, the copilot should be able to do the same classes of wo
 
 ## Core Principle
 
-The copilot should not require the user to manually select the correct object. Manual selection can be a useful hint, but the agent needs its own editable model of the document.
+FigureAgent should not require the user to manually select the correct object. Manual selection can be a useful hint, but the agent needs its own editable model of the document.
 
 ## Required Capabilities
 
@@ -113,15 +113,15 @@ After applying a step, the worker should:
 - run publication QA checks
 - expose warnings to the planner
 
-The next step is corrective autonomy: if verification shows the wrong thing changed or nothing changed, the copilot should plan a small corrective follow-up.
+The next step is corrective autonomy: if verification shows the wrong thing changed or nothing changed, FigureAgent should plan a small corrective follow-up.
 
 ## Human Evaluation Layer
 
-The copilot should learn from user judgment before we attempt true model training.
+FigureAgent should learn from user judgment before we attempt true model training.
 
 Near-term loop:
 
-1. Copilot edits or creates a figure.
+1. FigureAgent edits or creates a figure.
 2. User accepts, partially accepts, or rejects the result.
 3. User records what worked and what failed in `publication_feedback.md`.
 4. The failure is mapped to `publication_rubric.md` rule IDs.

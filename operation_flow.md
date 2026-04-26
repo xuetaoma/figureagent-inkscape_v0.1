@@ -2,14 +2,14 @@
 
 ## Goal
 
-Inkscape Copilot should feel like an AI collaborator attached to the document the user is already editing. The user should not need to think about queues, bridge files, worker lifetimes, AppleScript menu triggers, or internal state.
+FigureAgent for Inkscape should feel like an AI collaborator attached to the document the user is already editing. The user should not need to think about queues, bridge files, worker lifetimes, AppleScript menu triggers, or internal state.
 
 The desired workflow is:
 
 1. Open or create a real Inkscape document.
-2. Open `Extensions -> Copilot -> Open Copilot Chat`.
+2. Open `Extensions -> FigureAgent -> Open FigureAgent Chat`.
 3. Chat naturally about the figure.
-4. The copilot observes the current document, reasons about the request, applies supported changes, and reports the result.
+4. FigureAgent observes the current document, reasons about the request, applies supported changes, and reports the result.
 
 ## Product Model
 
@@ -30,12 +30,12 @@ The bridge is an implementation detail. The product should feel document-attache
 
 The user-facing menu should remain simple:
 
-- `Open Copilot Chat`
-- `Apply Copilot Changes`
+- `Open FigureAgent Chat`
+- `Apply FigureAgent Changes`
 
-`Open Copilot Chat` starts or refreshes the browser sidecar and captures the active document.
+`Open FigureAgent Chat` starts or refreshes the browser sidecar and captures the active document.
 
-`Apply Copilot Changes` is a worker entry point. During normal chat use, the browser triggers it after a finalized action plan exists. It remains visible as a fallback/debug command.
+`Apply FigureAgent Changes` is a worker entry point. During normal chat use, the browser triggers it after a finalized action plan exists. It remains visible as a fallback/debug command.
 
 ## Intended Prompt Flow
 
@@ -169,9 +169,8 @@ Not responsible for:
 The project is succeeding when the workflow feels like:
 
 - `I open my SVG.`
-- `I open Copilot Chat.`
+- `I open FigureAgent Chat.`
 - `I ask for what I want.`
-- `The copilot selects the right thing, changes it, verifies it, and keeps going.`
+- `FigureAgent selects the right thing, changes it, verifies it, and keeps going.`
 
 If the user has to reason about hidden queues, stale sessions, manual apply clicks, or internal extension commands, the product model still needs work.
-

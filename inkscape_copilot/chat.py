@@ -59,14 +59,14 @@ def _print_help() -> None:
 def run_chat(model: str | None = None, context_path: str | None = None) -> int:
     session = ChatSession(model=model, document=_load_context(context_path))
 
-    print("Inkscape Copilot Interactive Mode")
-    print("Type a prompt and watch the copilot stream its response.")
+    print("FigureAgent for Inkscape Interactive Mode")
+    print("Type a prompt and watch FigureAgent stream its response.")
     print("The structured plan is shown after each turn.")
     print("Use /help for commands.")
 
     while True:
         try:
-            prompt = input("\ncopilot> ").strip()
+            prompt = input("\nfigureagent> ").strip()
         except EOFError:
             print()
             return 0

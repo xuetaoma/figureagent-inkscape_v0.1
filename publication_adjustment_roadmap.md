@@ -2,7 +2,7 @@
 
 ## Goal
 
-Move Inkscape Copilot from "can create/edit figures" to "can refine publication figures reliably".
+Move FigureAgent for Inkscape from "can create/edit figures" to "can refine publication figures reliably".
 
 Publication-level editing means precision, consistency, and verification:
 
@@ -215,13 +215,10 @@ In progress:
 
 - semantic selection via `role`, `panel`, and `axis`
 - figure-aware targeting for ticks, panel labels, and axis labels
-- arbitrary panel detection and panel bounding boxes
+- arbitrary panel detection and robust panel bounding boxes for dense imported figures
 - rendered snapshot generation for visual QA
 - math glyph companion targeting for Greek/path-based labels
-- tick controls:
-  - `set_tick_length`
-  - `set_tick_thickness`
-  - `set_tick_label_size`
+- feedback/example retrieval from `publication_feedback.md` and `publication_examples/`
 
 Recently added:
 
@@ -231,19 +228,26 @@ Recently added:
 - scene graph marks path-based math symbols as `text_glyph` companions through `text_group_id` / `glyph_for`
 - font-size conversion accounts for document units and parent transforms
 - planner/chat context includes `publication_rubric`, `publication_qa`, and `publication_fix_suggestions`
-- safe QA-to-action suggestions are generated for obvious typography normalization fixes
+- planner/chat context includes compact publication feedback and example notes
+- safe QA-to-action suggestions are generated for obvious typography, tick length, tick thickness, and stroke-width normalization fixes
+- semantic plot resizing:
+  - `resize_plot_width`
+  - `resize_plot_height`
+  - preserve tick length, stroke width, and text size while changing plot geometry
+- style primitives:
+  - `set_tick_length`
+  - `set_tick_thickness`
+  - `set_tick_label_size`
+  - `set_object_font_family`
+  - `set_object_font_weight`
+  - `set_object_font_style`
+  - `set_object_text_anchor`
+  - `set_object_stroke_linecap`
+  - `set_object_stroke_linejoin`
+  - `set_object_arrowhead`
 
 Next:
 
-- improve panel bounding boxes for dense imported figures
-- add typography controls:
-  - bold
-  - italic
-  - font family
-  - text alignment
-- add stroke controls:
-  - cap
-  - join
-  - arrowhead/marker style
 - feed QA warnings into corrective planning
-- expand QA-to-action suggestions beyond typography into tick length, stroke consistency, and panel alignment
+- make panel alignment fixes executable only after panel roots are verified
+- add more example folders with screenshots, metadata, notes, and user verdicts

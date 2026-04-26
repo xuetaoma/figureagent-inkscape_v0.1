@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from .bridge import (
     append_job,
+    mark_error,
     pending_jobs,
     read_document_context,
     read_events,
@@ -39,7 +40,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Inkscape Copilot</title>
+  <title>FigureAgent for Inkscape</title>
   <style>
     :root {
       --bg: #f3efe5;
@@ -334,8 +335,8 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
   <header>
-    <h1>Inkscape Copilot</h1>
-    <div class="sub">A conversational sidecar for the current Inkscape document. Ask for changes, keep chatting while it works, and let it stay in sync with your active drawing.</div>
+    <h1>FigureAgent for Inkscape</h1>
+    <div class="sub">A conversational figure-editing agent for the current Inkscape document. Ask for changes, keep chatting while it works, and let it stay in sync with your active drawing.</div>
   </header>
   <main>
     <section class="chat">
@@ -350,14 +351,14 @@ INDEX_HTML = """<!doctype html>
   </main>
   <footer>
     <form id="composer">
-      <textarea id="prompt" placeholder="Ask the copilot to change the drawing..."></textarea>
+      <textarea id="prompt" placeholder="Ask FigureAgent to change the drawing..."></textarea>
       <button class="attach" type="button" id="attach" title="Attach images">Image</button>
       <button class="send" type="submit">Send</button>
       <button class="clear" type="button" id="clear">Clear Chat</button>
     </form>
     <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
     <div class="attachments" id="attachments"></div>
-    <div class="busy" id="busy" hidden><span class="dot"></span><span>Copilot is working in the background. You can keep typing.</span></div>
+    <div class="busy" id="busy" hidden><span class="dot"></span><span>FigureAgent is working in the background. You can keep typing.</span></div>
     <div class="command-status" id="command-status" hidden>
       <div class="command-copy">
         <span class="command-label">Last Command</span>
@@ -428,7 +429,7 @@ INDEX_HTML = """<!doctype html>
       const stats = [
         ['Document', documentName],
         ['Page size', `${pageWidth} × ${pageHeight} px`],
-        ['Copilot', status.processing ? 'Working' : 'Idle'],
+        ['FigureAgent', status.processing ? 'Working' : 'Idle'],
         ['Pending prompts', String(status.pending_prompt_count ?? 0)],
         ['Bridge', status.bridge_status?.state ?? 'unknown'],
         ['Session', status.session_state?.active ? (status.session_state?.worker_state ?? 'active') : 'inactive'],
@@ -873,6 +874,32 @@ class CopilotApp:
             return []
 
     def _dispatch_plan_to_inkscape(self, prompt: str, plan: ActionPlan) -> tuple[bool, str]:
+        def job_finished(job_id: str) -> tuple[bool, bool, str]:
+            result = read_execution_result()
+            if result.get("job_id") == job_id and result.get("state") == "applied":
+                return True, True, str(result.get("summary") or f"Applied {job_id}.")
+            if result.get("job_id") == job_id and result.get("state") == "error":
+                return True, False, str(result.get("error") or f"Failed to apply {job_id}.")
+
+            status = read_status()
+            if job_id in set(status.get("applied_job_ids") or []):
+                return True, True, str(result.get("summary") or f"Applied {job_id}.")
+            if job_id in set(status.get("failed_job_ids") or []):
+                return True, False, str(status.get("last_error") or result.get("error") or f"Failed to apply {job_id}.")
+            return False, False, ""
+
+        def wait_for_job(job_id: str, timeout_seconds: float) -> tuple[bool, bool, str]:
+            deadline = time.time() + timeout_seconds
+            while time.time() < deadline:
+                finished, ok, message = job_finished(job_id)
+                if finished:
+                    return True, ok, message
+                time.sleep(0.25)
+            finished, ok, message = job_finished(job_id)
+            if finished:
+                return True, ok, message
+            return False, False, f"Timed out waiting for Inkscape to apply {job_id}."
+
         with self.lock:
             if self.state.apply_in_flight:
                 return False, "The current step is already being dispatched to Inkscape."
@@ -899,24 +926,37 @@ class CopilotApp:
             with self.lock:
                 self._sync_execution_messages_locked()
 
-            apply_ok, apply_error = trigger_apply_pending_jobs()
-            if apply_ok:
+            apply_error: str | None = None
+            for attempt in range(2):
+                apply_ok, apply_error = trigger_apply_pending_jobs()
+                if not apply_ok:
+                    continue
                 with self.lock:
                     self.state.last_command_stage = "Applying in Inkscape"
                     self.state.last_command_running = True
-                return True, f"Dispatched {job.job_id} to Inkscape."
+                finished, job_ok, job_message = wait_for_job(job.job_id, 30.0 if attempt == 0 else 45.0)
+                if finished:
+                    with self.lock:
+                        self._sync_execution_messages_locked()
+                        self.state.last_command_stage = "Applied" if job_ok else "Apply failed"
+                        self.state.last_command_running = False
+                        self.state.last_command_failed = not job_ok
+                    return job_ok, job_message
+                apply_error = job_message
 
+            error_text = apply_error or "Could not dispatch planned step to Inkscape."
+            mark_error(job.job_id, error_text)
             write_execution_result(
                 state="error",
                 job_id=job.job_id,
-                error=apply_error or "Could not dispatch planned step to Inkscape.",
+                error=error_text,
             )
             with self.lock:
                 self._sync_execution_messages_locked()
                 self.state.last_command_stage = "Dispatch failed"
                 self.state.last_command_running = False
                 self.state.last_command_failed = True
-            return False, apply_error or "Could not dispatch planned step to Inkscape."
+            return False, error_text
         finally:
             with self.lock:
                 self.state.apply_in_flight = False
@@ -958,6 +998,8 @@ class CopilotApp:
             step_message: str | None = None
             sync_warning: str | None = None
             dispatch_message: str | None = None
+            plan: ActionPlan | None = None
+            error_stage = "Planner error"
 
             try:
                 self.state.document, sync_warning = self._sync_document_context()
@@ -1041,14 +1083,18 @@ class CopilotApp:
                         self.state.last_command_failed = False
             except OpenAIPlannerError as exc:
                 error_message = str(exc)
+                error_stage = "Planner error"
+            except Exception as exc:
+                error_message = f"Unexpected FigureAgent worker error: {type(exc).__name__}: {exc}"
+                error_stage = "Worker error"
 
             with self.lock:
                 assistant_message.pending = False
                 self.state.last_sync_warning = sync_warning
                 if error_message:
                     assistant_message.content = f"{assistant_message.content}\n\nError: {error_message}".strip()
-                    self.state.messages.append(WebMessage(role="system", content=f"Planner error: {error_message}"))
-                    self.state.last_command_stage = "Planner error"
+                    self.state.messages.append(WebMessage(role="system", content=f"{error_stage}: {error_message}"))
+                    self.state.last_command_stage = error_stage
                     self.state.last_command_running = False
                     self.state.last_command_failed = True
                 else:
@@ -1058,7 +1104,7 @@ class CopilotApp:
                         self.state.messages.append(WebMessage(role="system", content=f"Dispatch note: {dispatch_message}"))
                     if step_message:
                         self.state.messages.append(WebMessage(role="system", content=step_message))
-                    if not plan.actions:
+                    if not plan or not plan.actions:
                         self.state.last_command_running = False
                     elif not dispatch_message:
                         bridge_state = read_status().get("state")
@@ -1155,7 +1201,7 @@ def run_web_app(host: str = "127.0.0.1", port: int = 8765, model: str | None = N
     app = CopilotApp(model=model)
     server = ThreadingHTTPServer((host, port), make_handler(app))
     url = f"http://{host}:{port}"
-    print(f"Inkscape Copilot web UI running at {url}")
+    print(f"FigureAgent for Inkscape web UI running at {url}")
     if open_browser:
         threading.Thread(target=lambda: (time.sleep(0.3), webbrowser.open(url)), daemon=True).start()
     try:

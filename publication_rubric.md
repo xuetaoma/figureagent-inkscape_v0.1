@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This rubric defines what Inkscape Copilot should look for when judging whether a figure is publication-ready. It is intentionally practical: every rule should eventually map to a detectable issue, a target selector, and a corrective action.
+This rubric defines what FigureAgent for Inkscape should look for when judging whether a figure is publication-ready. It is intentionally practical: every rule should eventually map to a detectable issue, a target selector, and a corrective action.
 
 The rubric is not a single journal style. It is a baseline for clean scientific figures that can be adapted later with journal-specific presets.
 
@@ -126,6 +126,12 @@ Typical correction:
 - set tick label size
 - set axis line stroke width
 
+Related automated checks:
+
+- `AXIS-001`: tick label size consistency
+- `AXIS-002`: tick length consistency
+- `AXIS-003`: tick stroke/thickness consistency
+
 ### STROKE-001: Strokes Are Clean And Consistent
 
 Stroke styling should be intentional and consistent.
@@ -199,7 +205,7 @@ Typical correction:
 
 ## User Evaluation Loop
 
-After the copilot edits a figure, the user evaluates the result.
+After FigureAgent edits a figure, the user evaluates the result.
 
 The user feedback should capture:
 
@@ -211,4 +217,3 @@ The user feedback should capture:
 - desired correction
 
 This feedback becomes the training signal for future rubric refinement and example retrieval.
-

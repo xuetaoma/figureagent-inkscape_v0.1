@@ -261,9 +261,9 @@ def apply_pending_jobs(svg: inkex.SvgDocumentElement, selected: list[inkex.BaseE
     _debug_log(f"apply_pending_jobs pending_count={len(jobs)}")
     if not jobs:
         sync_document_context(svg, selected)
-        write_execution_result(state="idle", summary="No pending copilot changes to apply.")
+        write_execution_result(state="idle", summary="No pending FigureAgent changes to apply.")
         _debug_log("apply_pending_jobs no jobs found")
-        return selected, "No pending copilot jobs found."
+        return selected, "No pending FigureAgent jobs found."
 
     current_selection = selected
     applied_count = 0
@@ -282,7 +282,13 @@ def apply_pending_jobs(svg: inkex.SvgDocumentElement, selected: list[inkex.BaseE
                 before_context = DocumentContext(width=None, height=None, selection=[], objects=[])
             current_selection, last_summary = apply_action_plan(svg, effective_selection, job.plan)
             try:
-                after_context = document_context_from_svg(svg, current_selection)
+                after_visual_snapshot = _render_visual_snapshot(svg)
+                after_context = document_context_from_svg(
+                    svg,
+                    current_selection,
+                    visual_snapshot=after_visual_snapshot,
+                )
+                write_document_context(after_context)
                 verification = verify_plan_execution(
                     prompt=job.prompt,
                     plan=job.plan,
@@ -329,10 +335,10 @@ def apply_pending_jobs(svg: inkex.SvgDocumentElement, selected: list[inkex.BaseE
     sync_document_context(svg, current_selection)
     if applied_count or failed_count:
         return current_selection, (
-            f"Applied {applied_count} queued copilot job(s), failed {failed_count}. "
+            f"Applied {applied_count} queued FigureAgent job(s), failed {failed_count}. "
             f"Last summary: {last_summary or 'No successful jobs.'}"
         )
-    return current_selection, "No queued copilot jobs were applied."
+    return current_selection, "No queued FigureAgent jobs were applied."
 
 
 class ApplyPendingJobsWorker(inkex.EffectExtension):
@@ -342,7 +348,7 @@ class ApplyPendingJobsWorker(inkex.EffectExtension):
         selected = list(self.svg.selection.values())
         _selected, summary = apply_pending_jobs(self.svg, selected)
         _debug_log(f"ApplyPendingJobsWorker.effect completed summary={summary}")
-        inkex.utils.debug(f"Inkscape Copilot: {summary}")
+        inkex.utils.debug(f"FigureAgent for Inkscape: {summary}")
 
 
 if __name__ == "__main__":

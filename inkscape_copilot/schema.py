@@ -34,6 +34,8 @@ SUPPORTED_ACTION_KINDS = {
     "set_stroke_width",
     "move_selection",
     "resize_selection",
+    "resize_plot_width",
+    "resize_plot_height",
     "scale_selection",
     "select_targets",
     "rename_selection",
@@ -49,10 +51,17 @@ SUPPORTED_ACTION_KINDS = {
     "set_object_fill_color",
     "set_object_fill_none",
     "set_object_font_size",
+    "set_object_font_family",
+    "set_object_font_weight",
+    "set_object_font_style",
+    "set_object_text_anchor",
     "set_object_dash_pattern",
     "set_object_stroke_color",
     "set_object_stroke_none",
     "set_object_stroke_width",
+    "set_object_stroke_linecap",
+    "set_object_stroke_linejoin",
+    "set_object_arrowhead",
     "set_document_size",
 }
 
@@ -167,6 +176,16 @@ class Action:
             height = params.get("height")
             if not isinstance(width, (int, float)) and not isinstance(height, (int, float)):
                 raise ValueError("resize_selection requires numeric width and/or height")
+        elif kind == "resize_plot_width":
+            width = params.get("width")
+            percent = params.get("percent")
+            if not isinstance(width, (int, float)) and not isinstance(percent, (int, float)):
+                raise ValueError("resize_plot_width requires numeric width or percent")
+        elif kind == "resize_plot_height":
+            height = params.get("height")
+            percent = params.get("percent")
+            if not isinstance(height, (int, float)) and not isinstance(percent, (int, float)):
+                raise ValueError("resize_plot_height requires numeric height or percent")
         elif kind == "rotate_selection":
             if not isinstance(params.get("degrees"), (int, float)):
                 raise ValueError("rotate_selection requires numeric degrees")
@@ -226,11 +245,46 @@ class Action:
                 raise ValueError("set_object_font_size requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("font_size_px"), (int, float)):
                 raise ValueError("set_object_font_size requires numeric font_size_px")
+        elif kind == "set_object_font_family":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_font_family requires params.object_id, text, role, panel, or axis")
+            if not isinstance(params.get("font_family"), str) or not params.get("font_family").strip():
+                raise ValueError("set_object_font_family requires params.font_family")
+        elif kind == "set_object_font_weight":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_font_weight requires params.object_id, text, role, panel, or axis")
+            if str(params.get("font_weight")) not in {"normal", "bold"}:
+                raise ValueError("set_object_font_weight requires params.font_weight to be normal or bold")
+        elif kind == "set_object_font_style":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_font_style requires params.object_id, text, role, panel, or axis")
+            if str(params.get("font_style")) not in {"normal", "italic"}:
+                raise ValueError("set_object_font_style requires params.font_style to be normal or italic")
+        elif kind == "set_object_text_anchor":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_text_anchor requires params.object_id, text, role, panel, or axis")
+            if str(params.get("text_anchor")) not in {"start", "middle", "end"}:
+                raise ValueError("set_object_text_anchor requires params.text_anchor to be start, middle, or end")
         elif kind == "replace_text":
             if not _has_target_selector(params):
                 raise ValueError("replace_text requires params.object_id, text, role, panel, or axis")
             if not isinstance(params.get("new_text"), str) or not params.get("new_text").strip():
                 raise ValueError("replace_text requires params.new_text")
+        elif kind == "set_object_stroke_linecap":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_stroke_linecap requires params.object_id, text, role, panel, or axis")
+            if str(params.get("stroke_linecap")) not in {"butt", "round", "square"}:
+                raise ValueError("set_object_stroke_linecap requires params.stroke_linecap to be butt, round, or square")
+        elif kind == "set_object_stroke_linejoin":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_stroke_linejoin requires params.object_id, text, role, panel, or axis")
+            if str(params.get("stroke_linejoin")) not in {"miter", "round", "bevel"}:
+                raise ValueError("set_object_stroke_linejoin requires params.stroke_linejoin to be miter, round, or bevel")
+        elif kind == "set_object_arrowhead":
+            if not _has_target_selector(params):
+                raise ValueError("set_object_arrowhead requires params.object_id, text, role, panel, or axis")
+            if str(params.get("marker")) not in {"none", "end", "start", "both"}:
+                raise ValueError("set_object_arrowhead requires params.marker to be none, end, start, or both")
         elif kind == "create_rectangle":
             if not all(isinstance(params.get(key), (int, float)) for key in ("x", "y", "width", "height")):
                 raise ValueError("create_rectangle requires numeric x, y, width, and height")
@@ -345,6 +399,10 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "delta_y_px": {"type": ["number", "null"]},
                                 "fill_hex": {"type": ["string", "null"]},
                                 "font_size_px": {"type": ["number", "null"]},
+                                "font_family": {"type": ["string", "null"]},
+                                "font_weight": {"type": ["string", "null"]},
+                                "font_style": {"type": ["string", "null"]},
+                                "text_anchor": {"type": ["string", "null"]},
                                 "group_id": {"type": ["string", "null"]},
                                 "panel_root_id": {"type": ["string", "null"]},
                                 "label_for": {"type": ["string", "null"]},
@@ -368,6 +426,9 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "role": {"type": ["string", "null"]},
                                 "stroke_hex": {"type": ["string", "null"]},
                                 "stroke_width_px": {"type": ["number", "null"]},
+                                "stroke_linecap": {"type": ["string", "null"]},
+                                "stroke_linejoin": {"type": ["string", "null"]},
+                                "marker": {"type": ["string", "null"]},
                                 "tag": {"type": ["string", "null"]},
                                 "text": {"type": ["string", "null"]},
                                 "text_hex": {"type": ["string", "null"]},
@@ -393,6 +454,10 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "delta_y_px",
                                 "fill_hex",
                                 "font_size_px",
+                                "font_family",
+                                "font_weight",
+                                "font_style",
+                                "text_anchor",
                                 "group_id",
                                 "panel_root_id",
                                 "label_for",
@@ -416,6 +481,9 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "role",
                                 "stroke_hex",
                                 "stroke_width_px",
+                                "stroke_linecap",
+                                "stroke_linejoin",
+                                "marker",
                                 "tag",
                                 "text",
                                 "text_hex",

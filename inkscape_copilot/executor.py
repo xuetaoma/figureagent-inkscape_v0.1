@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from math import atan2, cos, pi, sin, sqrt
 
 import inkex
 from inkex import Circle, PathElement, Rectangle, Transform
+from lxml import etree
 
 from .bridge import STATE_DIR, read_document_context
 from .schema import ActionPlan
@@ -513,6 +515,69 @@ def _set_font_size(nodes: list[inkex.BaseElement], font_size_px: float) -> None:
             _set_style_value(target, "font-size", f"{local_font_size_px}px")
 
 
+def _set_text_style(nodes: list[inkex.BaseElement], key: str, value: str) -> None:
+    for node in nodes:
+        for target in _text_size_targets(node):
+            if _tag_name(target) in {"text", "tspan"}:
+                _set_style_value(target, key, value)
+                if key in {"font-family", "font-weight", "font-style", "text-anchor"}:
+                    target.set(key, value)
+
+
+def _set_line_style(nodes: list[inkex.BaseElement], key: str, value: str) -> None:
+    for node in nodes:
+        _set_style_value(node, key, value)
+
+
+def _svg_defs(svg: inkex.SvgDocumentElement) -> inkex.BaseElement:
+    try:
+        for child in svg:
+            if _tag_name(child) == "defs":
+                return child
+    except Exception:
+        pass
+    return etree.SubElement(svg, inkex.addNS("defs", "svg"))
+
+
+def _ensure_arrowhead_marker(svg: inkex.SvgDocumentElement) -> str:
+    marker_id = "figureagent-arrowhead"
+    existing = _find_node_by_id(svg, marker_id)
+    if existing is not None:
+        return marker_id
+    defs = _svg_defs(svg)
+    marker = etree.SubElement(defs, inkex.addNS("marker", "svg"))
+    marker.set("id", marker_id)
+    marker.set("markerWidth", "8")
+    marker.set("markerHeight", "8")
+    marker.set("refX", "7")
+    marker.set("refY", "4")
+    marker.set("orient", "auto")
+    marker.set("markerUnits", "strokeWidth")
+    path = etree.SubElement(marker, inkex.addNS("path", "svg"))
+    path.set("d", "M 0,0 L 8,4 L 0,8 z")
+    path.set("style", "fill:context-stroke;stroke:none")
+    return marker_id
+
+
+def _set_arrowhead(svg: inkex.SvgDocumentElement, nodes: list[inkex.BaseElement], marker: str) -> None:
+    if marker == "none":
+        for node in nodes:
+            _set_style_value(node, "marker-start", "none")
+            _set_style_value(node, "marker-end", "none")
+        return
+    marker_id = _ensure_arrowhead_marker(svg)
+    marker_url = f"url(#{marker_id})"
+    for node in nodes:
+        if marker in {"start", "both"}:
+            _set_style_value(node, "marker-start", marker_url)
+        else:
+            _set_style_value(node, "marker-start", "none")
+        if marker in {"end", "both"}:
+            _set_style_value(node, "marker-end", marker_url)
+        else:
+            _set_style_value(node, "marker-end", "none")
+
+
 def _set_corner_radius(nodes: list[inkex.BaseElement], corner_radius: float) -> None:
     radius = max(0.0, corner_radius)
     for node in nodes:
@@ -600,6 +665,327 @@ def _distribute_selection(nodes: list[inkex.BaseElement], mode: str) -> None:
     for index, node in enumerate(ordered):
         bbox = node.bounding_box()
         _move_selected([node], 0.0, (start + (step * index)) - float(bbox.top))
+
+
+RESIZABLE_PLOT_TAGS = {"circle", "ellipse", "image", "line", "path", "polygon", "polyline", "rect", "text", "tspan", "use"}
+
+
+@dataclass(frozen=True)
+class PlotResizeGeometry:
+    left: float
+    top: float
+    right: float
+    bottom: float
+    source: str
+
+    @property
+    def width(self) -> float:
+        return self.right - self.left
+
+    @property
+    def height(self) -> float:
+        return self.bottom - self.top
+
+
+def _plot_resize_targets(nodes: list[inkex.BaseElement]) -> list[inkex.BaseElement]:
+    targets: list[inkex.BaseElement] = []
+    seen: set[str] = set()
+    for node in nodes:
+        descendants: list[inkex.BaseElement] = []
+        try:
+            descendants = [item for item in node.iterdescendants() if _tag_name(item) in RESIZABLE_PLOT_TAGS]
+        except Exception:
+            descendants = []
+        candidates = descendants if descendants else ([node] if _tag_name(node) in RESIZABLE_PLOT_TAGS else [])
+        for candidate in candidates:
+            key = candidate.get("id") or str(id(candidate))
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(candidate)
+    return targets
+
+
+def _line_role(node: inkex.BaseElement) -> tuple[str | None, str | None]:
+    try:
+        svg = node.getroottree().getroot()
+    except Exception:
+        svg = node
+    role, _panel, axis = _node_semantics(svg, node)
+    return role, axis
+
+
+def _node_bbox_tuple(node: inkex.BaseElement) -> tuple[float, float, float, float] | None:
+    try:
+        bbox = node.bounding_box()
+    except Exception:
+        return None
+    return (
+        float(bbox.left),
+        float(bbox.top),
+        float(bbox.left + bbox.width),
+        float(bbox.top + bbox.height),
+    )
+
+
+def _bbox_center_tuple(bounds: tuple[float, float, float, float]) -> tuple[float, float]:
+    left, top, right, bottom = bounds
+    return (left + (right - left) / 2.0, top + (bottom - top) / 2.0)
+
+
+def _line_bounds_for_role(targets: list[inkex.BaseElement], role: str, semantic_axis: str) -> list[tuple[float, float, float, float]]:
+    bounds: list[tuple[float, float, float, float]] = []
+    for node in targets:
+        if _tag_name(node) != "line":
+            continue
+        node_role, node_axis = _line_role(node)
+        if node_role != role or node_axis != semantic_axis:
+            continue
+        endpoints = _line_endpoints(node)
+        if endpoints is not None:
+            x1, y1, x2, y2 = endpoints
+            bounds.append((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+            continue
+        bbox = _node_bbox_tuple(node)
+        if bbox:
+            bounds.append(bbox)
+    return bounds
+
+
+def _plot_geometry_from_axes(nodes: list[inkex.BaseElement], targets: list[inkex.BaseElement]) -> PlotResizeGeometry:
+    selection_left, selection_top, selection_right, selection_bottom = _selection_bbox(nodes)
+    fallback = PlotResizeGeometry(selection_left, selection_top, selection_right, selection_bottom, "selection")
+
+    x_axis_bounds = _line_bounds_for_role(targets, "axis_line", "x")
+    y_axis_bounds = _line_bounds_for_role(targets, "axis_line", "y")
+    if not x_axis_bounds and not y_axis_bounds:
+        return fallback
+
+    left = min((item[0] for item in x_axis_bounds), default=selection_left)
+    right = max((item[2] for item in x_axis_bounds), default=selection_right)
+    top = min((item[1] for item in y_axis_bounds), default=selection_top)
+    bottom = max((item[3] for item in y_axis_bounds), default=selection_bottom)
+
+    if x_axis_bounds and not y_axis_bounds:
+        top = selection_top
+        bottom = selection_bottom
+    if y_axis_bounds and not x_axis_bounds:
+        left = selection_left
+        right = selection_right
+
+    if right <= left or bottom <= top:
+        return fallback
+    return PlotResizeGeometry(left, top, right, bottom, "axes")
+
+
+def _number_attr(node: inkex.BaseElement, name: str) -> float | None:
+    value = node.get(name)
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace("px", "").strip())
+    except ValueError:
+        return None
+
+
+def _set_number_attr(node: inkex.BaseElement, name: str, value: float) -> None:
+    node.set(name, f"{value:g}")
+
+
+def _remap(value: float, origin: float, scale: float) -> float:
+    return origin + ((value - origin) * scale)
+
+
+def _plot_resize_origin(geometry: PlotResizeGeometry, axis: str) -> float:
+    return geometry.left if axis == "x" else geometry.top
+
+
+def _plot_resize_length(geometry: PlotResizeGeometry, axis: str) -> float:
+    return geometry.width if axis == "x" else geometry.height
+
+
+def _center_position_policy(
+    node: inkex.BaseElement,
+    *,
+    axis: str,
+    geometry: PlotResizeGeometry,
+) -> str:
+    role, semantic_axis = _line_role(node)
+    if role == "panel_label":
+        return "skip"
+    bounds = _node_bbox_tuple(node)
+    if bounds is None:
+        return "remap"
+    center_x, center_y = _bbox_center_tuple(bounds)
+    pad_x = max(6.0, geometry.width * 0.08)
+    pad_y = max(6.0, geometry.height * 0.08)
+    inside_x = geometry.left - pad_x <= center_x <= geometry.right + pad_x
+    inside_y = geometry.top - pad_y <= center_y <= geometry.bottom + pad_y
+
+    if role in {"tick_label", "axis_label"}:
+        if semantic_axis == axis:
+            return "remap"
+        if semantic_axis and semantic_axis != axis:
+            return "skip"
+        if axis == "x":
+            return "remap" if inside_x and not (inside_y and center_x < geometry.left + pad_x) else "skip"
+        return "remap" if inside_y and not (inside_x and center_y > geometry.bottom - pad_y) else "skip"
+
+    if axis == "x":
+        return "remap" if center_x >= geometry.left - pad_x else "skip"
+    return "remap" if geometry.top - pad_y <= center_y <= geometry.bottom + (pad_y * 3.0) else "skip"
+
+
+def _semantic_translate(node: inkex.BaseElement, delta_x: float, delta_y: float) -> None:
+    if abs(delta_x) < 1e-9 and abs(delta_y) < 1e-9:
+        return
+    node.transform = Transform(f"translate({delta_x}, {delta_y})") @ node.transform
+
+
+def _resize_line_for_plot(node: inkex.BaseElement, *, axis: str, origin: float, scale: float) -> bool:
+    endpoints = _line_endpoints(node)
+    if endpoints is None:
+        return False
+    x1, y1, x2, y2 = endpoints
+    role, semantic_axis = _line_role(node)
+
+    if role == "axis_tick":
+        if axis == "x":
+            center = (x1 + x2) / 2.0
+            new_center = _remap(center, origin, scale)
+            _set_number_attr(node, "x1", new_center + (x1 - center))
+            _set_number_attr(node, "x2", new_center + (x2 - center))
+            _set_number_attr(node, "y1", y1)
+            _set_number_attr(node, "y2", y2)
+        else:
+            center = (y1 + y2) / 2.0
+            new_center = _remap(center, origin, scale)
+            _set_number_attr(node, "y1", new_center + (y1 - center))
+            _set_number_attr(node, "y2", new_center + (y2 - center))
+            _set_number_attr(node, "x1", x1)
+            _set_number_attr(node, "x2", x2)
+        return True
+
+    if axis == "x":
+        _set_number_attr(node, "x1", _remap(x1, origin, scale))
+        _set_number_attr(node, "x2", _remap(x2, origin, scale))
+        _set_number_attr(node, "y1", y1)
+        _set_number_attr(node, "y2", y2)
+    else:
+        _set_number_attr(node, "y1", _remap(y1, origin, scale))
+        _set_number_attr(node, "y2", _remap(y2, origin, scale))
+        _set_number_attr(node, "x1", x1)
+        _set_number_attr(node, "x2", x2)
+    if role in {"axis_line", "plot_curve"} or semantic_axis:
+        _set_style_value(node, "vector-effect", "non-scaling-stroke")
+    return True
+
+
+def _resize_rect_for_plot(node: inkex.BaseElement, *, axis: str, origin: float, scale: float) -> bool:
+    x = _number_attr(node, "x")
+    y = _number_attr(node, "y")
+    width = _number_attr(node, "width")
+    height = _number_attr(node, "height")
+    if x is None or y is None:
+        return False
+    if axis == "x":
+        if width is None:
+            return False
+        new_left = _remap(x, origin, scale)
+        new_right = _remap(x + width, origin, scale)
+        _set_number_attr(node, "x", min(new_left, new_right))
+        _set_number_attr(node, "width", abs(new_right - new_left))
+    else:
+        if height is None:
+            return False
+        new_top = _remap(y, origin, scale)
+        new_bottom = _remap(y + height, origin, scale)
+        _set_number_attr(node, "y", min(new_top, new_bottom))
+        _set_number_attr(node, "height", abs(new_bottom - new_top))
+    _set_style_value(node, "vector-effect", "non-scaling-stroke")
+    return True
+
+
+def _move_node_center_for_plot(node: inkex.BaseElement, *, axis: str, origin: float, scale: float) -> bool:
+    try:
+        bbox = node.bounding_box()
+    except Exception:
+        return False
+    if axis == "x":
+        center = float(bbox.left + bbox.width / 2.0)
+        new_center = _remap(center, origin, scale)
+        _semantic_translate(node, new_center - center, 0.0)
+    else:
+        center = float(bbox.top + bbox.height / 2.0)
+        new_center = _remap(center, origin, scale)
+        _semantic_translate(node, 0.0, new_center - center)
+    return True
+
+
+def _resize_path_like_for_plot(node: inkex.BaseElement, *, axis: str, origin: float, scale: float) -> None:
+    if axis == "x":
+        transform = Transform(f"translate({origin}, 0) scale({scale}, 1) translate({-origin}, 0)")
+    else:
+        transform = Transform(f"translate(0, {origin}) scale(1, {scale}) translate(0, {-origin})")
+    node.transform = transform @ node.transform
+    _set_style_value(node, "vector-effect", "non-scaling-stroke")
+
+
+def _path_like_should_scale(node: inkex.BaseElement, *, axis: str, geometry: PlotResizeGeometry) -> bool:
+    role, semantic_axis = _line_role(node)
+    if role in {"axis_label", "tick_label", "label", "panel_label", "layer_label"}:
+        return False
+    if role in {"axis_line", "axis_tick", "plot_curve"} or semantic_axis:
+        return True
+    bounds = _node_bbox_tuple(node)
+    if bounds is None:
+        return True
+    center_x, center_y = _bbox_center_tuple(bounds)
+    if axis == "x":
+        return geometry.left <= center_x <= geometry.right and geometry.top <= center_y <= geometry.bottom
+    return geometry.left <= center_x <= geometry.right and geometry.top <= center_y <= geometry.bottom
+
+
+def _resize_plot_dimension(nodes: list[inkex.BaseElement], *, axis: str, percent: float | None, target_length: float | None) -> None:
+    if not nodes:
+        raise inkex.AbortExtension("Semantic plot resize requires a selected plot or target objects.")
+    if percent is not None and percent <= 0:
+        raise inkex.AbortExtension("Semantic plot resize percent must be greater than zero.")
+    if target_length is not None and target_length <= 0:
+        raise inkex.AbortExtension("Semantic plot resize target length must be greater than zero.")
+
+    targets = _plot_resize_targets(nodes)
+    geometry = _plot_geometry_from_axes(nodes, targets)
+    current_length = _plot_resize_length(geometry, axis)
+    if current_length <= 0:
+        raise inkex.AbortExtension("Cannot semantically resize a plot with zero width or height.")
+    scale = (percent / 100.0) if percent is not None else (float(target_length) / current_length)
+    if scale <= 0:
+        raise inkex.AbortExtension("Semantic plot resize scale must be greater than zero.")
+    origin = _plot_resize_origin(geometry, axis)
+
+    for node in targets:
+        tag = _tag_name(node)
+        handled = False
+        if tag == "line":
+            handled = _resize_line_for_plot(node, axis=axis, origin=origin, scale=scale)
+        elif tag == "rect" or tag == "image":
+            handled = _resize_rect_for_plot(node, axis=axis, origin=origin, scale=scale)
+        elif tag in {"circle", "ellipse", "text", "tspan", "use"}:
+            policy = _center_position_policy(node, axis=axis, geometry=geometry)
+            handled = True if policy == "skip" else _move_node_center_for_plot(node, axis=axis, origin=origin, scale=scale)
+        elif tag in {"path", "polygon", "polyline"}:
+            if _path_like_should_scale(node, axis=axis, geometry=geometry):
+                _resize_path_like_for_plot(node, axis=axis, origin=origin, scale=scale)
+            else:
+                policy = _center_position_policy(node, axis=axis, geometry=geometry)
+                if policy != "skip":
+                    _move_node_center_for_plot(node, axis=axis, origin=origin, scale=scale)
+            handled = True
+        if not handled:
+            policy = _center_position_policy(node, axis=axis, geometry=geometry)
+            if policy != "skip":
+                _move_node_center_for_plot(node, axis=axis, origin=origin, scale=scale)
 
 
 def _set_z_order(nodes: list[inkex.BaseElement], order: str) -> list[inkex.BaseElement]:
@@ -1081,6 +1467,28 @@ def apply_action_plan(
             )
             continue
 
+        if action.kind == "resize_plot_width":
+            targets = _target_nodes(svg, action.params) if TargetQuery.from_params(action.params).has_selector() else selected
+            _resize_plot_dimension(
+                targets,
+                axis="x",
+                percent=float(action.params["percent"]) if action.params.get("percent") is not None else None,
+                target_length=float(action.params["width"]) if action.params.get("width") is not None else None,
+            )
+            selected = targets
+            continue
+
+        if action.kind == "resize_plot_height":
+            targets = _target_nodes(svg, action.params) if TargetQuery.from_params(action.params).has_selector() else selected
+            _resize_plot_dimension(
+                targets,
+                axis="y",
+                percent=float(action.params["percent"]) if action.params.get("percent") is not None else None,
+                target_length=float(action.params["height"]) if action.params.get("height") is not None else None,
+            )
+            selected = targets
+            continue
+
         if action.kind == "scale_selection":
             _scale_selected(selected, float(action.params["percent"]))
             continue
@@ -1178,9 +1586,44 @@ def apply_action_plan(
             _set_font_size(selected, float(action.params["font_size_px"]))
             continue
 
+        if action.kind == "set_object_font_family":
+            selected = _target_nodes(svg, action.params)
+            _set_text_style(selected, "font-family", str(action.params["font_family"]))
+            continue
+
+        if action.kind == "set_object_font_weight":
+            selected = _target_nodes(svg, action.params)
+            _set_text_style(selected, "font-weight", str(action.params["font_weight"]))
+            continue
+
+        if action.kind == "set_object_font_style":
+            selected = _target_nodes(svg, action.params)
+            _set_text_style(selected, "font-style", str(action.params["font_style"]))
+            continue
+
+        if action.kind == "set_object_text_anchor":
+            selected = _target_nodes(svg, action.params)
+            _set_text_style(selected, "text-anchor", str(action.params["text_anchor"]))
+            continue
+
         if action.kind == "replace_text":
             selected = _target_nodes(svg, action.params)
             _replace_text(selected, str(action.params["new_text"]))
+            continue
+
+        if action.kind == "set_object_stroke_linecap":
+            selected = _target_nodes(svg, action.params)
+            _set_line_style(selected, "stroke-linecap", str(action.params["stroke_linecap"]))
+            continue
+
+        if action.kind == "set_object_stroke_linejoin":
+            selected = _target_nodes(svg, action.params)
+            _set_line_style(selected, "stroke-linejoin", str(action.params["stroke_linejoin"]))
+            continue
+
+        if action.kind == "set_object_arrowhead":
+            selected = _target_nodes(svg, action.params)
+            _set_arrowhead(svg, selected, str(action.params["marker"]))
             continue
 
         if action.kind == "create_rectangle":

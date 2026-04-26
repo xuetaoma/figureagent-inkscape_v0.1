@@ -1,13 +1,13 @@
-# Inkscape Copilot
+# FigureAgent for Inkscape
 
-Inkscape Copilot is an early AI figure-editing agent for Inkscape. The goal is not just to generate simple SVG shapes from prompts. The goal is to help edit real publication figures: inspect the current document, identify the right objects, plan a precise edit, apply it in Inkscape, and verify what changed.
+FigureAgent for Inkscape is an early AI figure-editing agent for Inkscape. The goal is not just to generate simple SVG shapes from prompts. The goal is to help edit real publication figures: inspect the current document, identify the right objects, plan a precise edit, apply it in Inkscape, and verify what changed.
 
 The current product surface is intentionally small:
 
 1. Open an SVG in Inkscape.
-2. Use `Extensions -> Copilot -> Open Copilot Chat`.
-3. Talk to the copilot in the browser window.
-4. The copilot syncs the document, plans the next step, and applies supported changes back into Inkscape.
+2. Use `Extensions -> FigureAgent -> Open FigureAgent Chat`.
+3. Talk to FigureAgent in the browser window.
+4. FigureAgent syncs the document, plans the next step, and applies supported changes back into Inkscape.
 
 ## Current Status
 
@@ -25,12 +25,12 @@ The current architecture is:
 
 The extension exposes only two menu items:
 
-- `Open Copilot Chat`
-- `Apply Copilot Changes`
+- `Open FigureAgent Chat`
+- `Apply FigureAgent Changes`
 
-`Open Copilot Chat` starts or refreshes the sidecar chat and captures the active document state.
+`Open FigureAgent Chat` starts or refreshes the sidecar chat and captures the active document state.
 
-`Apply Copilot Changes` is the Inkscape-side worker entry point. In normal chat use, the browser triggers this automatically after an action plan is ready, so users should rarely need to click it manually.
+`Apply FigureAgent Changes` is the Inkscape-side worker entry point. In normal chat use, the browser triggers this automatically after an action plan is ready, so users should rarely need to click it manually.
 
 ## What It Can Do Now
 
@@ -38,17 +38,18 @@ Supported capabilities include:
 
 - create basic shapes and diagram primitives
 - create and edit text
-- change fill, stroke paint, stroke width, dash pattern, opacity, and font size
+- change fill, stroke paint, stroke width, dash pattern, opacity, font size, font family, bold/italic, text anchoring, stroke cap/join, and arrowheads
 - move, resize, scale, rotate, align, and distribute objects
+- semantically resize plot width/height while preserving tick length, stroke width, and text size
 - target existing objects by `object_id`, visible text, role, panel, axis, group, parent, and relationship hints
 - detect arbitrary panel labels such as `a`, `b`, `c`, ..., not just `a-d`
-- adjust axis ticks and tick label sizes
+- adjust axis tick length, tick thickness, and tick label sizes
 - use rendered page snapshots so the model can compare SVG state with visual appearance
 - associate path-based math glyphs such as rho/Omega with nearby text labels through `text_group_id` and `glyph_for`
-- include publication rubric, QA findings, and safe fix suggestions in the planning context
+- include publication rubric, QA findings, safe fix suggestions, feedback notes, and local publication examples in the planning context
 - use attached reference images when running with an image-capable OpenAI model
 
-The copilot is conservative about page resizing:
+FigureAgent is conservative about page resizing:
 
 - it will not change the page/canvas size unless you explicitly ask for it
 
@@ -82,7 +83,9 @@ The chat UI is intentionally concise:
 - `publication_adjustment_roadmap.md`: publication figure editing roadmap
 - `publication_rubric.md`: baseline rules for publication-quality figure evaluation
 - `publication_examples/`: reference and evaluated example figures
-- `publication_feedback.md`: user evaluation log for copilot results
+- `publication_feedback.md`: user evaluation log for FigureAgent results
+
+Compatibility note: the user-facing project name is **FigureAgent for Inkscape**, but the Python package and some environment variables still use `inkscape_copilot` / `INKSCAPE_COPILOT_*` to avoid breaking existing extension installs.
 
 ## Local Setup
 
@@ -154,7 +157,7 @@ source .venv/bin/activate
 Notes:
 
 - `requirements.txt` installs the local package with `pip install -e .`
-- the browser-side copilot does not need third-party API SDKs
+- the browser-side agent does not need third-party API SDKs
 - the Inkscape extension runtime uses Inkscape's bundled Python environment for `inkex`
 
 ## Run The Web UI Manually
@@ -186,10 +189,10 @@ On macOS this is typically:
 ~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions
 ```
 
-After copying, restart Inkscape. The `Extensions -> Copilot` submenu should contain exactly:
+After copying, restart Inkscape. The `Extensions -> FigureAgent` submenu should contain exactly:
 
-- `Open Copilot Chat`
-- `Apply Copilot Changes`
+- `Open FigureAgent Chat`
+- `Apply FigureAgent Changes`
 
 ## Evaluation Harness
 
@@ -203,7 +206,7 @@ The harness writes JSON results under `state/` and reports whether the plan prod
 
 ## Development Direction
 
-The next major work is making the copilot more agentic:
+The next major work is making FigureAgent more agentic:
 
 - rubric-based publication evaluation
 - user-reviewed examples and feedback

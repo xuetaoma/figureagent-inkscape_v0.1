@@ -45,8 +45,11 @@ def _safe_action_for_finding(finding: dict[str, Any]) -> Action | None:
     rule_id = str(finding.get("rule_id") or "")
     message = str(finding.get("message") or "").lower()
     selector = finding.get("target_selector")
+    suggested_value = finding.get("suggested_value")
     if not isinstance(selector, dict):
         selector = {}
+    if not isinstance(suggested_value, dict):
+        suggested_value = {}
     role = str(selector.get("role") or "")
 
     if rule_id == "TEXT-001" and role == "panel_label":
@@ -62,6 +65,28 @@ def _safe_action_for_finding(finding: dict[str, Any]) -> Action | None:
                 kind="set_object_font_size",
                 params={"object_id": object_id.strip(), "font_size_px": pt_to_css_px(10)},
             )
+    if rule_id == "AXIS-002" and role == "axis_tick":
+        length_px = suggested_value.get("length_px")
+        if isinstance(length_px, (int, float)) and length_px > 0:
+            params: dict[str, Any] = {"role": "axis_tick", "length_px": float(length_px)}
+            if isinstance(selector.get("axis"), str) and selector.get("axis"):
+                params["axis"] = selector["axis"]
+            if isinstance(selector.get("panel"), str) and selector.get("panel"):
+                params["panel"] = selector["panel"]
+            return Action(kind="set_tick_length", params=params)
+    if rule_id == "AXIS-003" and role == "axis_tick":
+        stroke_width_px = suggested_value.get("stroke_width_px")
+        if isinstance(stroke_width_px, (int, float)) and stroke_width_px >= 0:
+            params = {"role": "axis_tick", "stroke_width_px": float(stroke_width_px)}
+            if isinstance(selector.get("axis"), str) and selector.get("axis"):
+                params["axis"] = selector["axis"]
+            if isinstance(selector.get("panel"), str) and selector.get("panel"):
+                params["panel"] = selector["panel"]
+            return Action(kind="set_tick_thickness", params=params)
+    if rule_id == "STROKE-001" and role:
+        stroke_width_px = suggested_value.get("stroke_width_px")
+        if isinstance(stroke_width_px, (int, float)) and stroke_width_px >= 0:
+            return Action(kind="set_object_stroke_width", params={"role": role, "stroke_width_px": float(stroke_width_px)})
     return None
 
 
@@ -117,4 +142,3 @@ def safe_publication_actions(document: DocumentContext, qa: dict[str, Any] | Non
         seen.add(key)
         actions.append(action)
     return actions
-

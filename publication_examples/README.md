@@ -9,6 +9,9 @@ The near-term goal is not fine-tuning. The goal is example-based guidance:
 3. write short critiques using `publication_rubric.md`
 4. retrieve relevant examples during planning
 
+The planner now reads compact summaries from this folder through `inkscape_copilot/publication_memory.py`.
+Keep examples short and concrete: the best notes name what the figure does well, which rubric rules apply, and what reusable correction the copilot should imitate.
+
 ## Suggested Structure
 
 Use one folder per example:
@@ -57,4 +60,3 @@ publication_examples/
 
 - ...
 ```
-

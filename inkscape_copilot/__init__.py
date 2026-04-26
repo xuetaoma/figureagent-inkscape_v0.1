@@ -1,2 +1,1 @@
-"""Inkscape copilot prototype package."""
-
+"""FigureAgent for Inkscape prototype package."""

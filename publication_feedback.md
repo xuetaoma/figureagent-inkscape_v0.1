@@ -1,8 +1,10 @@
 # Publication Feedback Log
 
-Use this file to record user evaluations after the copilot edits a figure.
+Use this file to record user evaluations after FigureAgent edits a figure.
 
 The goal is to turn human judgment into concrete rules and future examples.
+
+FigureAgent reads the latest entries from this file during planning. Favor short, actionable notes over long prose: what failed visually, what target should have been selected, and what concrete operation should happen next time.
 
 ## Feedback Template
 
@@ -37,4 +39,3 @@ Desired correction:
 Implementation note:
 - ...
 ```
-

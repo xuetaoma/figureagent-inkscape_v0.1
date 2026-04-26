@@ -56,7 +56,7 @@ def cmd_reset(_: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Inkscape copilot local preview tool")
+    parser = argparse.ArgumentParser(description="FigureAgent for Inkscape local preview tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     send_parser = subparsers.add_parser("send", help="Interpret a prompt into explicit actions")
@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send_parser.set_defaults(func=cmd_send)
 
-    chat_parser = subparsers.add_parser("chat", help="Start an interactive streaming copilot session")
+    chat_parser = subparsers.add_parser("chat", help="Start an interactive streaming FigureAgent session")
     chat_parser.add_argument(
         "--model",
         help="Optional model override for chat mode",
@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chat_parser.set_defaults(func=lambda args: run_chat(model=args.model, context_path=args.context_file))
 
-    serve_parser = subparsers.add_parser("serve", help="Start the non-blocking local web copilot UI")
+    serve_parser = subparsers.add_parser("serve", help="Start the non-blocking local FigureAgent web UI")
     serve_parser.add_argument("--host", default="127.0.0.1", help="Host to bind the local web UI to")
     serve_parser.add_argument("--port", type=int, default=8765, help="Port to bind the local web UI to")
     serve_parser.add_argument("--model", help="Optional model override for web UI mode")

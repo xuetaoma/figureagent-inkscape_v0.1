@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <inkscape-extension xmlns="http://www.inkscape.org/namespace/inkscape/extension">
-  <name>Open Copilot Chat</name>
-  <id>com.xuetaoma.inkscapecopilot.openwindow</id>
+  <name>Open FigureAgent Chat</name>
+  <id>com.xuetaoma.figureagent.openwindow</id>
   <effect needs-live-preview="false">
     <object-type>all</object-type>
     <effects-menu>
-      <submenu name="Copilot"/>
+      <submenu name="FigureAgent"/>
     </effects-menu>
   </effect>
   <script>

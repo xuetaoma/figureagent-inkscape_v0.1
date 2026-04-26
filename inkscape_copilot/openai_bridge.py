@@ -13,6 +13,7 @@ from typing import Any, Iterator
 
 from .planner import DocumentContext
 from .publication_fixes import PUBLICATION_RUBRIC_SUMMARY, publication_fix_suggestions, safe_publication_actions
+from .publication_memory import publication_memory_summary
 from .publication_qa import publication_qa
 from .schema import Action, ActionPlan, action_plan_json_schema
 from .templates import build_layer_schematic_plan, build_publication_figure_plan
@@ -494,20 +495,22 @@ def _image_detail() -> str:
 
 def _system_prompt() -> str:
     return (
-        "You are an Inkscape copilot planner. "
+        "You are FigureAgent for Inkscape, an AI planner for publication-quality figure editing. "
         "Return only actions supported by the application. "
         "Selection-based actions operate on the current selection. "
         "Creation actions may create new basic shapes on the current layer. "
         "The document_context.objects array is a compact scene graph snapshot of existing SVG objects; it may include role, panel, axis, parent_id, group_id, descendant_count, panel_root_id, label_for, attached_to, text_group_id, and glyph_for hints for semantic targeting. "
         "The document_context.panels array lists detected figure panels such as a, b, c, d, e, f, or g with label objects, bounding boxes, and object counts; use it for panel-specific edits instead of assuming only a-d exist. "
         "Use object_id, object_index, visible text, or semantic selectors like role, panel, axis, tag, parent_id, group_id, panel_root_id, label_for, attached_to, text_group_id, and glyph_for from that snapshot for direct edits. "
-        "When modifying an existing design, prefer object-targeted actions like select_targets, set_object_fill_color, set_object_fill_none, set_object_stroke_color, set_object_stroke_none, set_object_stroke_width, set_object_dash_pattern, set_object_font_size, move_object, replace_text, and delete_object instead of recreating the design. "
+        "When modifying an existing design, prefer object-targeted actions like select_targets, set_object_fill_color, set_object_fill_none, set_object_stroke_color, set_object_stroke_none, set_object_stroke_width, set_object_dash_pattern, set_object_font_size, set_object_font_weight, move_object, replace_text, and delete_object instead of recreating the design. "
         "Use relationships when available: label_for links labels to their bars, attached_to links connectors or electrodes to target layers, panel_root_id links objects to stable figure roots, and text_group_id/glyph_for link path-based Greek/math glyphs such as rho or Omega to nearby text labels. "
         "If the user refers to figure parts like ticks, axis labels, panel a, connectors, electrodes, layer labels, or x-axis, first target matching objects with select_targets using semantic selectors. "
         "If the user refers to the whole schematic, the whole figure, or figure a/b/c, first build a multi-selection with select_targets using the panel selector and include_descendants=true, then use selection transforms like set_selection_position, scale_selection, align_selection, or distribute_selection. "
         "When the user requests font sizes in points, convert to CSS/SVG pixels with font_size_px = pt * 4 / 3; the executor compensates for parent transforms so the visual rendered size matches the requested point size. "
         "If the user explicitly says they already selected objects in Inkscape, you may use selection-based actions even when document_context.selection_count is 0, because the snapshot can lag behind the live selection. "
         "Use set_tick_length for requests about making ticks longer or shorter, set_tick_thickness for tick stroke weight, and set_tick_label_size for numeric tick label text size. "
+        "For publication plot resizing, prefer resize_plot_width or resize_plot_height over scale_selection. These semantic resize actions anchor on detected axis lines when possible, change the plot geometry, keep tick length, tick thickness, stroke widths, and text sizes visually stable, and avoid scaling panel labels. Use scale_selection only when the user explicitly wants every selected object scaled visually. "
+        "Use set_object_font_family, set_object_font_weight, set_object_font_style, and set_object_text_anchor for typography polish; use set_object_stroke_linecap, set_object_stroke_linejoin, and set_object_arrowhead for line/arrow styling. "
         "For publication-ready or publication-level cleanup requests, use publication_rubric, publication_qa, and publication_fix_suggestions from the user prompt. Apply safe obvious fixes such as panel labels 12 pt, axis labels 10 pt, tick labels 9 pt, and consistent tick styles; avoid ambiguous fixes like renaming missing/duplicate panels unless the user explicitly requests it. "
         "After duplicate_selection or create_* actions, later actions in the same plan should assume the newly created object(s) are the active target. "
         "For diagrams, approximate complex visual references with supported primitives and prefer high-level diagram actions like "
@@ -526,8 +529,9 @@ def _system_prompt() -> str:
         "set_fill_color, set_fill_none, set_stroke_color, set_stroke_none, set_stroke_width, set_font_size, set_corner_radius, set_dash_pattern, "
         "set_tick_length, set_tick_thickness, set_tick_label_size, "
         "set_z_order, set_document_size, set_opacity, move_selection, set_selection_position, align_selection, distribute_selection, duplicate_selection, "
-        "resize_selection, scale_selection, rotate_selection, rename_selection, select_object, select_targets, delete_object, move_object, set_object_position, set_object_size, "
-        "set_object_fill_color, set_object_fill_none, set_object_stroke_color, set_object_stroke_none, set_object_stroke_width, set_object_dash_pattern, set_object_font_size, replace_text, "
+        "resize_selection, resize_plot_width, resize_plot_height, scale_selection, rotate_selection, rename_selection, select_object, select_targets, delete_object, move_object, set_object_position, set_object_size, "
+        "set_object_fill_color, set_object_fill_none, set_object_stroke_color, set_object_stroke_none, set_object_stroke_width, set_object_stroke_linecap, set_object_stroke_linejoin, set_object_arrowhead, set_object_dash_pattern, "
+        "set_object_font_size, set_object_font_family, set_object_font_weight, set_object_font_style, set_object_text_anchor, replace_text, "
         "create_rectangle, create_rounded_rectangle, "
         "create_circle, create_ellipse, create_polygon, create_star, create_repeated_circles, create_line, create_arrow, create_bracket, create_layer_bar, create_text."
     )
@@ -535,7 +539,7 @@ def _system_prompt() -> str:
 
 def _chat_system_prompt() -> str:
     return (
-        "You are an interactive Inkscape copilot. "
+        "You are FigureAgent for Inkscape, an interactive AI figure-editing agent. "
         "Reply concisely and operationally. "
         "Keep replies to 1 to 4 short lines. "
         "Focus on what you are about to change, create, or target in the drawing. "
@@ -554,6 +558,7 @@ def _user_prompt(prompt: str, document: DocumentContext) -> str:
             "publication_rubric": PUBLICATION_RUBRIC_SUMMARY,
             "publication_qa": qa,
             "publication_fix_suggestions": publication_fix_suggestions(document, qa),
+            "publication_memory": publication_memory_summary(),
             "action_param_rules": {
                 "set_fill_color": {"params": {"hex": "#RRGGBB"}},
                 "set_fill_none": {"params": {}},
@@ -575,6 +580,8 @@ def _user_prompt(prompt: str, document: DocumentContext) -> str:
                 "distribute_selection": {"params": {"text": "horizontal"}},
                 "duplicate_selection": {"params": {"count": 1, "delta_x_px": 80.0, "delta_y_px": 0.0}},
                 "resize_selection": {"params": {"width": 120.0, "height": 80.0}},
+                "resize_plot_width": {"params": {"object_id": None, "text": None, "role": None, "panel": "c", "axis": None, "percent": 50.0, "width": None}},
+                "resize_plot_height": {"params": {"object_id": None, "text": None, "role": None, "panel": "c", "axis": None, "percent": 80.0, "height": None}},
                 "scale_selection": {"params": {"percent": 100.0}},
                 "rotate_selection": {"params": {"degrees": 15.0}},
                 "rename_selection": {"params": {"prefix": "badge"}},
@@ -591,8 +598,15 @@ def _user_prompt(prompt: str, document: DocumentContext) -> str:
                 "set_object_stroke_color": {"params": {"object_id": "rect123", "text": None, "role": None, "panel": None, "axis": None, "hex": "#111827"}},
                 "set_object_stroke_none": {"params": {"object_id": "rect123", "text": None, "role": None, "panel": None, "axis": None}},
                 "set_object_stroke_width": {"params": {"object_id": "rect123", "text": None, "role": None, "panel": None, "axis": None, "stroke_width_px": 2.0}},
+                "set_object_stroke_linecap": {"params": {"object_id": None, "text": None, "role": "axis_line", "panel": None, "axis": None, "stroke_linecap": "round"}},
+                "set_object_stroke_linejoin": {"params": {"object_id": None, "text": None, "role": "plot_curve", "panel": None, "axis": None, "stroke_linejoin": "round"}},
+                "set_object_arrowhead": {"params": {"object_id": None, "text": None, "role": "connector", "panel": None, "axis": None, "marker": "end"}},
                 "set_object_dash_pattern": {"params": {"object_id": "rect123", "text": None, "role": None, "panel": None, "axis": None, "dash_pattern": "4,2"}},
                 "set_object_font_size": {"params": {"object_id": "text123", "text": None, "role": None, "panel": None, "axis": None, "font_size_px": 12.0}},
+                "set_object_font_family": {"params": {"object_id": "text123", "text": None, "role": None, "panel": None, "axis": None, "font_family": "Arial"}},
+                "set_object_font_weight": {"params": {"object_id": None, "text": None, "role": "panel_label", "panel": None, "axis": None, "font_weight": "bold"}},
+                "set_object_font_style": {"params": {"object_id": "text123", "text": None, "role": None, "panel": None, "axis": None, "font_style": "italic"}},
+                "set_object_text_anchor": {"params": {"object_id": None, "text": None, "role": "axis_label", "panel": None, "axis": "x", "text_anchor": "middle"}},
                 "replace_text": {"params": {"object_id": "text123", "text": None, "role": None, "panel": None, "axis": None, "new_text": "new label"}},
                 "create_rectangle": {
                     "params": {
@@ -779,7 +793,8 @@ def _chat_messages(messages: list[dict[str, Any]], document: DocumentContext) ->
             "publication_rubric": PUBLICATION_RUBRIC_SUMMARY,
             "publication_qa": qa,
             "publication_fix_suggestions": publication_fix_suggestions(document, qa),
-            "note": "This context describes the current Inkscape document state the copilot can act on.",
+            "publication_memory": publication_memory_summary(),
+            "note": "This context describes the current Inkscape document state FigureAgent can act on.",
         },
         indent=2,
     )

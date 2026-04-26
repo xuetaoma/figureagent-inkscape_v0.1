@@ -20,8 +20,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - local CLI tests do not have inkex installed
     inkex = None
 
-from inkscape_copilot.bridge import STATE_DIR, reset_state, write_document_context
-from inkscape_copilot.worker import document_context_from_svg
+from inkscape_copilot.bridge import STATE_DIR, reset_state
+from inkscape_copilot.worker import sync_document_context
 
 HOST = "127.0.0.1"
 PORT = 8767
@@ -241,12 +241,12 @@ def open_fresh_interactive_window(*, reset_runtime_state: bool = True) -> None:
             details = ""
         if details:
             raise RuntimeError(
-                "Could not start the interactive copilot window.\n\n"
+                "Could not start the FigureAgent interactive window.\n\n"
                 f"Try this in Terminal:\n{manual_command}\n\n"
                 f"Startup log:\n{details}"
             )
         raise RuntimeError(
-            "Could not start the interactive copilot window.\n\n"
+            "Could not start the FigureAgent interactive window.\n\n"
             f"Try this in Terminal:\n{manual_command}"
         )
 
@@ -256,7 +256,7 @@ def open_fresh_interactive_window(*, reset_runtime_state: bool = True) -> None:
 
 
 if inkex is not None:
-    class OpenInteractiveCopilotExtension(inkex.EffectExtension):
+    class OpenInteractiveFigureAgentExtension(inkex.EffectExtension):
         def effect(self) -> None:
             try:
                 open_fresh_interactive_window()
@@ -264,12 +264,12 @@ if inkex is not None:
                 raise inkex.AbortExtension(str(exc)) from exc
 
             selected = list(self.svg.selection.values())
-            write_document_context(document_context_from_svg(self.svg, selected))
+            sync_document_context(self.svg, selected)
 
-            inkex.utils.debug(f"Inkscape Copilot: Opened a fresh interactive window at {URL}")
+            inkex.utils.debug(f"FigureAgent for Inkscape: Opened a fresh interactive window at {URL}")
 
 
 if __name__ == "__main__":
     if inkex is None:
         raise SystemExit("inkex is required when running this module as an Inkscape extension.")
-    OpenInteractiveCopilotExtension().run()
+    OpenInteractiveFigureAgentExtension().run()

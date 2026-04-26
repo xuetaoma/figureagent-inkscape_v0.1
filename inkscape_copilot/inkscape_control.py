@@ -32,6 +32,9 @@ def _copilot_menu_script(menu_item_name: str, *, auto_confirm: bool = False) -> 
 \t\t\tend try
 \t\t\tdelay 0.15
 \t\tend repeat
+\t\ttry
+\t\t\tkey code 36
+\t\tend try
 """
     return f'''
 on findMenuItemByName(parentMenu, targetName)
@@ -63,14 +66,19 @@ tell application "System Events"
 \t\t\tdelay 0.25
 \t\tend repeat
 \t\tif foundExtensions is false then
-\t\t\terror "Open or focus an Inkscape document window before running copilot commands."
+\t\t\terror "Open or focus an Inkscape document window before running FigureAgent commands."
 \t\tend if
 \t\tclick menu bar item "Extensions" of menu bar 1
 \t\tdelay 0.2
 \t\tset extensionsMenu to menu 1 of menu bar item "Extensions" of menu bar 1
 \t\tset targetItem to missing value
 \t\ttry
-\t\t\tif exists menu item "Copilot" of extensionsMenu then
+\t\t\tif exists menu item "FigureAgent" of extensionsMenu then
+\t\t\t\tclick menu item "FigureAgent" of extensionsMenu
+\t\t\t\tdelay 0.2
+\t\t\t\tset targetItem to my findMenuItemByName(menu 1 of menu item "FigureAgent" of extensionsMenu, "{menu_item_name}")
+\t\t\tend if
+\t\t\tif targetItem is missing value and exists menu item "Copilot" of extensionsMenu then
 \t\t\t\tclick menu item "Copilot" of extensionsMenu
 \t\t\t\tdelay 0.2
 \t\t\t\tset targetItem to my findMenuItemByName(menu 1 of menu item "Copilot" of extensionsMenu, "{menu_item_name}")
@@ -114,8 +122,12 @@ def trigger_copilot_menu_item(menu_item_name: str, *, auto_confirm: bool = False
 
 
 def trigger_apply_pending_jobs() -> tuple[bool, str | None]:
-    return trigger_copilot_menu_item("Apply Copilot Changes", auto_confirm=True)
+    ok, error = trigger_copilot_menu_item("Apply FigureAgent Changes", auto_confirm=True)
+    if ok:
+        return ok, error
+    legacy_ok, legacy_error = trigger_copilot_menu_item("Apply Copilot Changes", auto_confirm=True)
+    return (legacy_ok, legacy_error) if legacy_ok else (ok, error)
 
 
 def trigger_sync_document_state() -> tuple[bool, str | None]:
-    return trigger_copilot_menu_item("Refresh Copilot Context")
+    return trigger_copilot_menu_item("Refresh FigureAgent Context")

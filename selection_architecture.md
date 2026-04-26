@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make object selection explicit and reliable. The copilot should not depend on stale UI selection or fragile prompt guessing when it can inspect the document directly.
+Make object selection explicit and reliable. FigureAgent should not depend on stale UI selection or fragile prompt guessing when it can inspect the document directly.
 
 ## Model
 
@@ -112,4 +112,3 @@ The executor should never guess intent from the prompt. It should only:
 - `select_targets` is the preferred explicit multi-object target action
 - panel-wide edits use panel selectors plus `include_descendants=true`
 - text-label edits should include companion `text_glyph` paths when present
-
