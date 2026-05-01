@@ -35,7 +35,7 @@ Inkscape document
 
 ## Main Layers
 
-### 1. Browser Sidecar
+### 1. Agent Client
 
 Owns:
 
@@ -45,9 +45,37 @@ Owns:
 - action-plan generation
 - running indicator and session UI
 
-The browser should trigger Inkscape only after a finalized action plan exists.
+Today this is the browser sidecar. Long term it can be any MCP-capable agent client.
+The agent client should trigger Inkscape only after a finalized action plan exists.
 
-### 2. Bridge State
+### 2. FigureAgent Tool Boundary
+
+Owns typed operations such as:
+
+- `get_document_context`
+- `get_bridge_status`
+- `validate_action_plan`
+- `select_targets`
+- `set_target_font_size`
+- `set_target_stroke_width`
+- `move_targets`
+- `resize_plot_width`
+- `resize_plot_height`
+- `run_publication_qa`
+- `queue_action_plan`
+- `apply_pending_jobs`
+- `queue_and_apply_action_plan`
+- `dispatch_action_plan`
+- `start_always_on_worker`
+- `stop_always_on_worker`
+- `get_always_on_worker_status`
+- `reset_bridge_state`
+
+This boundary is also the MCP server surface. The current implementation lives in `inkscape_copilot/tools.py` and wraps the existing bridge/worker flow.
+
+MCP also exposes read-only resources for document context, scene graph, SVG/PNG snapshots, status, recent events, worker logs, and publication QA.
+
+### 3. Bridge State
 
 Owns shared files:
 
@@ -59,7 +87,7 @@ Owns shared files:
 
 The bridge should model state, not raw prompt queues.
 
-### 3. Inkscape Worker
+### 4. Inkscape Worker
 
 Owns:
 
@@ -71,7 +99,11 @@ Owns:
 
 The worker treats Inkscape as the source of truth.
 
-### 4. Scene Graph
+An always-on local supervisor watches for queued finalized plans and invokes the Inkscape worker entry point automatically. `Open FigureAgent Chat` registers the active Inkscape document and attaches the supervisor to that document session. This removes the normal need for manual Apply clicks while preserving Inkscape as the process that mutates the live document.
+
+Important Inkscape constraint: a standard effect extension cannot be a true permanently running in-process editor. If it stayed alive forever, the Inkscape UI would be blocked and SVG changes would not be committed until the extension exits. The practical architecture is therefore a document-scoped supervisor plus one-shot Inkscape execution entries.
+
+### 5. Scene Graph
 
 The scene graph is the main observed model of the document.
 
@@ -121,7 +153,7 @@ Examples of semantic roles:
 - `scale_bar`
 - `lattice_dot`
 
-### 5. Target Resolver
+### 6. Target Resolver
 
 The resolver turns semantic selectors into concrete object IDs.
 
@@ -152,7 +184,7 @@ Examples:
 
 When selecting text-like objects, companion `text_glyph` paths should be included so imported rho/Omega/superscript glyphs move and scale with their logical label.
 
-### 6. Figure Planner
+### 7. Figure Planner
 
 The planner should reason semantically before geometrically.
 
@@ -171,7 +203,7 @@ Examples of semantic operations:
 - standardize panel labels
 - set axis labels to 10 pt and tick labels to 9 pt
 
-### 7. Executor
+### 8. Executor
 
 The executor is intentionally narrow.
 
@@ -188,6 +220,10 @@ The executor should not infer intent from the raw prompt.
 ## Current Module Map
 
 - `bridge.py`: runtime paths and bridge-state helpers
+- `always_on_worker.py`: queue-watching worker supervisor used by chat, CLI, and MCP tools
+- `tools.py`: local typed FigureAgent tool boundary used by the web app and MCP server
+- `mcp_resources.py`: read-only MCP resources for context, snapshots, status, logs, and QA
+- `mcp_server.py`: stdio MCP server exposing FigureAgent tools and resources
 - `webapp.py`: browser sidecar and status UI
 - `openai_bridge.py`: chat/planner calls and prompt contract
 - `worker.py`: Inkscape extension worker, sync, apply, snapshot
@@ -217,6 +253,9 @@ Short term:
 
 Medium term:
 
+- expand the MCP server with resources for snapshots, logs, and QA results
+- move more web-side operations through the shared tool boundary
+- reduce AppleScript/menu automation to a compatibility trigger
 - add semantic figure operations in a dedicated operation layer
 - support group/ungroup and connector rerouting
 - preview resolved target sets in the UI

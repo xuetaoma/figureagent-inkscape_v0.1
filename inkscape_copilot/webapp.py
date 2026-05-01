@@ -14,13 +14,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .bridge import (
-    append_job,
-    mark_error,
-    pending_jobs,
     read_document_context,
-    read_events,
     read_execution_result,
-    read_planned_step,
     read_session_state,
     read_status,
     reset_state,
@@ -28,11 +23,11 @@ from .bridge import (
     write_planned_step,
 )
 from .defaults import DEFAULT_PAGE_HEIGHT_PX, DEFAULT_PAGE_WIDTH_PX, default_document_context
-from .inkscape_control import trigger_apply_pending_jobs
 from .interpreter import PromptError
 from .openai_bridge import OpenAIPlannerError, plan_with_openai, stream_chat_reply
 from .planner import DocumentContext, DocumentObject, PanelInfo, SelectionItem, build_fallback_plan
 from .schema import ActionPlan
+from .tools import call_tool
 
 
 INDEX_HTML = """<!doctype html>
@@ -821,14 +816,18 @@ class CopilotApp:
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
             execution_result = self._sync_execution_messages_locked()
+            try:
+                ui_state = call_tool("get_ui_state", {"event_limit": 20})
+            except Exception:
+                ui_state = {}
             return {
                 "messages": [message.to_dict() for message in self.state.messages],
                 "pending_prompt_count": self.state.pending_prompt_count,
                 "processing": self.state.processing,
-                "bridge_status": read_status(),
-                "session_state": read_session_state(),
-                "document_context": read_document_context(),
-                "planned_step": read_planned_step(),
+                "bridge_status": ui_state.get("bridge_status", read_status()),
+                "session_state": ui_state.get("session_state", read_session_state()),
+                "document_context": ui_state.get("document_context", read_document_context()),
+                "planned_step": ui_state.get("planned_step"),
                 "execution_result": execution_result,
                 "sync_warning": self.state.last_sync_warning,
                 "working_brief": self.state.working_brief,
@@ -838,8 +837,9 @@ class CopilotApp:
                     "running": self.state.last_command_running,
                     "failed": self.state.last_command_failed,
                 },
-                "recent_events": read_events(limit=20),
-                "pending_jobs": [job.to_dict() for job in pending_jobs()],
+                "recent_events": ui_state.get("recent_events", []),
+                "pending_jobs": ui_state.get("pending_jobs", []),
+                "always_on_worker": ui_state.get("always_on_worker"),
             }
 
     def _update_working_brief(self, prompt: str, assistant_text: str, image_urls: list[str]) -> None:
@@ -874,32 +874,6 @@ class CopilotApp:
             return []
 
     def _dispatch_plan_to_inkscape(self, prompt: str, plan: ActionPlan) -> tuple[bool, str]:
-        def job_finished(job_id: str) -> tuple[bool, bool, str]:
-            result = read_execution_result()
-            if result.get("job_id") == job_id and result.get("state") == "applied":
-                return True, True, str(result.get("summary") or f"Applied {job_id}.")
-            if result.get("job_id") == job_id and result.get("state") == "error":
-                return True, False, str(result.get("error") or f"Failed to apply {job_id}.")
-
-            status = read_status()
-            if job_id in set(status.get("applied_job_ids") or []):
-                return True, True, str(result.get("summary") or f"Applied {job_id}.")
-            if job_id in set(status.get("failed_job_ids") or []):
-                return True, False, str(status.get("last_error") or result.get("error") or f"Failed to apply {job_id}.")
-            return False, False, ""
-
-        def wait_for_job(job_id: str, timeout_seconds: float) -> tuple[bool, bool, str]:
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
-                finished, ok, message = job_finished(job_id)
-                if finished:
-                    return True, ok, message
-                time.sleep(0.25)
-            finished, ok, message = job_finished(job_id)
-            if finished:
-                return True, ok, message
-            return False, False, f"Timed out waiting for Inkscape to apply {job_id}."
-
         with self.lock:
             if self.state.apply_in_flight:
                 return False, "The current step is already being dispatched to Inkscape."
@@ -909,48 +883,32 @@ class CopilotApp:
             self.state.last_command_failed = False
 
         try:
-            execution_result = read_execution_result()
-            if execution_result.get("state") == "dispatched":
-                return False, "The current step has already been dispatched and is still waiting on Inkscape."
-
-            queued = pending_jobs()
-            if queued:
-                return False, "There is already a pending step waiting for Inkscape to apply."
-
-            job = append_job(prompt, plan, source="web-send")
-            write_execution_result(
-                state="dispatched",
-                job_id=job.job_id,
-                summary=f"Dispatched {job.job_id} to Inkscape for execution.",
-            )
             with self.lock:
                 self._sync_execution_messages_locked()
+            with self.lock:
+                self.state.last_command_stage = "Applying in Inkscape"
+                self.state.last_command_running = True
 
-            apply_error: str | None = None
-            for attempt in range(2):
-                apply_ok, apply_error = trigger_apply_pending_jobs()
-                if not apply_ok:
-                    continue
-                with self.lock:
-                    self.state.last_command_stage = "Applying in Inkscape"
-                    self.state.last_command_running = True
-                finished, job_ok, job_message = wait_for_job(job.job_id, 30.0 if attempt == 0 else 45.0)
-                if finished:
-                    with self.lock:
-                        self._sync_execution_messages_locked()
-                        self.state.last_command_stage = "Applied" if job_ok else "Apply failed"
-                        self.state.last_command_running = False
-                        self.state.last_command_failed = not job_ok
-                    return job_ok, job_message
-                apply_error = job_message
-
-            error_text = apply_error or "Could not dispatch planned step to Inkscape."
-            mark_error(job.job_id, error_text)
-            write_execution_result(
-                state="error",
-                job_id=job.job_id,
-                error=error_text,
+            result = call_tool(
+                "dispatch_action_plan",
+                {
+                    "prompt": prompt,
+                    "plan": plan.to_dict(),
+                    "source": "web-send",
+                    "retry_count": 2,
+                    "wait_timeout_seconds": 30.0,
+                },
             )
+            ok = bool(result.get("ok"))
+            message = str(result.get("message") or ("Applied." if ok else "Could not dispatch planned step to Inkscape."))
+            with self.lock:
+                self._sync_execution_messages_locked()
+                self.state.last_command_stage = "Applied" if ok else "Apply failed"
+                self.state.last_command_running = False
+                self.state.last_command_failed = not ok
+            return ok, message
+        except Exception as exc:
+            error_text = str(exc)
             with self.lock:
                 self._sync_execution_messages_locked()
                 self.state.last_command_stage = "Dispatch failed"

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -21,7 +20,16 @@ except ModuleNotFoundError:  # pragma: no cover - local CLI tests do not have in
     inkex = None
 
 from inkscape_copilot.bridge import STATE_DIR, reset_state
-from inkscape_copilot.worker import sync_document_context
+from inkscape_copilot.always_on_worker import start_worker
+from inkscape_copilot.platform_support import (
+    detached_process_kwargs,
+    is_macos,
+    is_windows,
+    list_listening_pids,
+    python_executable,
+    terminate_process,
+)
+from inkscape_copilot.worker import register_current_document, sync_document_context
 
 HOST = "127.0.0.1"
 PORT = 8767
@@ -67,24 +75,7 @@ def _clear_web_ui_log() -> None:
 
 
 def _list_server_pids() -> list[int]:
-    result = subprocess.run(
-        ["lsof", "-t", f"-iTCP:{PORT}", "-sTCP:LISTEN"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return []
-    pids: list[int] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            pids.append(int(line))
-        except ValueError:
-            continue
-    return pids
+    return list_listening_pids(PORT)
 
 
 def _stop_previous_server() -> None:
@@ -98,12 +89,7 @@ def _stop_previous_server() -> None:
         return
 
     for known_pid in known_pids:
-        try:
-            os.kill(known_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-        except Exception:
-            continue
+        terminate_process(known_pid)
 
     deadline = time.time() + 3
     while time.time() < deadline:
@@ -113,14 +99,13 @@ def _stop_previous_server() -> None:
         time.sleep(0.1)
 
     for known_pid in _list_server_pids():
-        try:
-            os.kill(known_pid, signal.SIGKILL)
-        except Exception:
-            pass
+        terminate_process(known_pid, force=True)
     _clear_web_ui_session()
 
 
 def _kill_copilot_processes_by_pattern() -> None:
+    if is_windows():
+        return
     patterns = [
         "inkscape_copilot.cli serve --port 8767",
         "run_web_app(host=\"127.0.0.1\", port=8767",
@@ -136,6 +121,8 @@ def _kill_copilot_processes_by_pattern() -> None:
 
 
 def _close_previous_browser_windows() -> None:
+    if not is_macos():
+        return
     script = f'''
 set targetUrls to {{"http://127.0.0.1:8767", "http://127.0.0.1:8768"}}
 
@@ -187,32 +174,29 @@ end try
 
 def _launch_server() -> int:
     WEB_UI_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    shell_command = (
-        f"cd {subprocess.list2cmdline([PACKAGE_PARENT])} && "
-        "exec "
-        + subprocess.list2cmdline(["python3", "-m", "inkscape_copilot.cli", "serve", "--port", str(PORT)])
-        + f" >> {subprocess.list2cmdline([str(WEB_UI_LOG_FILE)])} 2>&1 < /dev/null"
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = PACKAGE_PARENT if not pythonpath else f"{PACKAGE_PARENT}{os.pathsep}{pythonpath}"
+    log_handle = WEB_UI_LOG_FILE.open("a", encoding="utf-8")
+    process = subprocess.Popen(
+        [python_executable(), "-m", "inkscape_copilot.cli", "serve", "--port", str(PORT)],
+        cwd=PACKAGE_PARENT,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        **detached_process_kwargs(),
     )
-    pid = os.spawnle(
-        os.P_NOWAIT,
-        "/bin/sh",
-        "/bin/sh",
-        "-lc",
-        shell_command,
-        {
-            **os.environ,
-            "PYTHONUNBUFFERED": "1",
-        },
-    )
+    log_handle.close()
     _write_web_ui_session(
         {
-            "server_pid": pid,
+            "server_pid": process.pid,
             "url": URL,
             "opened_at": time.time(),
             "log_file": str(WEB_UI_LOG_FILE),
         }
     )
-    return pid
+    return process.pid
 
 
 def open_fresh_interactive_window(*, reset_runtime_state: bool = True) -> None:
@@ -233,7 +217,7 @@ def open_fresh_interactive_window(*, reset_runtime_state: bool = True) -> None:
         time.sleep(0.25)
 
     if not _server_alive():
-        manual_command = f"cd {PACKAGE_PARENT} && python3 -m inkscape_copilot.cli serve --port {PORT}"
+        manual_command = f"cd {PACKAGE_PARENT} && {python_executable()} -m inkscape_copilot.cli serve --port {PORT}"
         details = ""
         try:
             details = WEB_UI_LOG_FILE.read_text(encoding="utf-8").strip()
@@ -250,9 +234,11 @@ def open_fresh_interactive_window(*, reset_runtime_state: bool = True) -> None:
             f"Try this in Terminal:\n{manual_command}"
         )
 
-    launched = subprocess.run(["open", "-a", "Safari", URL], check=False, capture_output=True, text=True)
-    if launched.returncode != 0:
-        webbrowser.open(URL)
+    if is_macos():
+        launched = subprocess.run(["open", "-a", "Safari", URL], check=False, capture_output=True, text=True)
+        if launched.returncode == 0:
+            return
+    webbrowser.open(URL)
 
 
 if inkex is not None:
@@ -265,6 +251,12 @@ if inkex is not None:
 
             selected = list(self.svg.selection.values())
             sync_document_context(self.svg, selected)
+            document = register_current_document(self.svg)
+            start_worker(
+                document_name=document.get("document_name"),
+                document_id=document.get("document_id"),
+                worker_origin="inkscape-extension",
+            )
 
             inkex.utils.debug(f"FigureAgent for Inkscape: Opened a fresh interactive window at {URL}")
 

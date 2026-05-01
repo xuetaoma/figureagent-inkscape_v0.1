@@ -1156,20 +1156,28 @@ def _regular_polygon_points(cx: float, cy: float, radius: float, count: int, deg
 def _create_polygon(
     layer: inkex.BaseElement,
     *,
-    cx: float,
-    cy: float,
-    radius: float,
-    count: int,
+    cx: float | None,
+    cy: float | None,
+    radius: float | None,
+    count: int | None,
     degrees: float,
+    points: list[dict[str, float]] | None = None,
     fill_hex: str | None,
     stroke_hex: str | None,
     stroke_width_px: float | None,
 ) -> inkex.BaseElement:
-    if count < 3:
-        raise inkex.AbortExtension("Polygon requires at least 3 sides.")
-    points = _regular_polygon_points(cx, cy, radius, count, degrees)
+    if points:
+        if len(points) < 3:
+            raise inkex.AbortExtension("Polygon requires at least 3 points.")
+        path_points = [(float(point["x"]), float(point["y"])) for point in points]
+    else:
+        if cx is None or cy is None or radius is None or count is None:
+            raise inkex.AbortExtension("Polygon requires either points or center/radius/count.")
+        if count < 3:
+            raise inkex.AbortExtension("Polygon requires at least 3 sides.")
+        path_points = _regular_polygon_points(cx, cy, radius, count, degrees)
     polygon = layer.add(PathElement())
-    polygon.set("d", "M " + " L ".join(f"{x},{y}" for x, y in points) + " Z")
+    polygon.set("d", "M " + " L ".join(f"{x},{y}" for x, y in path_points) + " Z")
     polygon.style["fill"] = fill_hex or "#2563eb"
     polygon.style["stroke"] = stroke_hex or "none"
     if stroke_width_px is not None:
@@ -1707,11 +1715,12 @@ def apply_action_plan(
             selected = [
                 _create_polygon(
                     layer,
-                    cx=float(action.params["cx"]),
-                    cy=float(action.params["cy"]),
-                    radius=float(action.params["radius"]),
-                    count=int(action.params["count"]),
+                    cx=float(action.params["cx"]) if isinstance(action.params.get("cx"), (int, float)) else None,
+                    cy=float(action.params["cy"]) if isinstance(action.params.get("cy"), (int, float)) else None,
+                    radius=float(action.params["radius"]) if isinstance(action.params.get("radius"), (int, float)) else None,
+                    count=int(action.params["count"]) if isinstance(action.params.get("count"), (int, float)) else None,
                     degrees=float(action.params.get("degrees") or 0.0),
+                    points=action.params.get("points") if isinstance(action.params.get("points"), list) else None,
                     fill_hex=action.params.get("fill_hex"),
                     stroke_hex=action.params.get("stroke_hex"),
                     stroke_width_px=action.params.get("stroke_width_px"),

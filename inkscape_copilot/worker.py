@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import os
 import shutil
@@ -26,10 +27,12 @@ from inkscape_copilot.bridge import (
     mark_job_applied,
     pending_jobs,
     read_document_context,
+    register_inkscape_document,
     write_execution_result,
     write_document_context,
 )
 from inkscape_copilot.executor import apply_action_plan
+from inkscape_copilot.platform_support import is_macos, is_windows
 from inkscape_copilot.planner import DocumentContext, DocumentObject, SelectionItem
 from inkscape_copilot.scene_graph import detect_panels, extract_scene_objects
 from inkscape_copilot.targeting import style_value, tag_name, bbox_dict, node_text
@@ -56,21 +59,41 @@ def _document_name(svg: inkex.SvgDocumentElement) -> str | None:
     return None
 
 
-def _document_objects(svg: inkex.SvgDocumentElement, limit: int | None = 500) -> list[DocumentObject]:
+def document_session_id(svg: inkex.SvgDocumentElement) -> str:
+    """Return a stable-enough fingerprint for the currently attached SVG root."""
+    parts = [
+        _document_name(svg) or "",
+        str(svg.get("id") or ""),
+        str(svg.get("width") or ""),
+        str(svg.get("height") or ""),
+        str(svg.get("viewBox") or svg.get("viewbox") or ""),
+    ]
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _document_objects(svg: inkex.SvgDocumentElement, limit: int | None = None) -> list[DocumentObject]:
     return extract_scene_objects(svg, limit=limit)
 
 
 def _inkscape_binary() -> str | None:
     explicit = os.environ.get("INKSCAPE_COPILOT_INKSCAPE_BIN")
-    candidates = [
-        explicit,
-        "/Applications/Inkscape.app/Contents/MacOS/inkscape",
-        shutil.which("inkscape"),
-    ]
+    candidates = [explicit]
+    if is_macos():
+        candidates.append("/Applications/Inkscape.app/Contents/MacOS/inkscape")
+    if is_windows():
+        candidates.extend(
+            [
+                shutil.which("inkscape.com"),
+                shutil.which("inkscape.exe"),
+                r"C:\Program Files\Inkscape\bin\inkscape.com",
+                r"C:\Program Files\Inkscape\bin\inkscape.exe",
+            ]
+        )
+    candidates.append(shutil.which("inkscape"))
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return str(candidate)
-    return shutil.which("inkscape")
+    return shutil.which("inkscape.com" if is_windows() else "inkscape")
 
 
 def _render_visual_snapshot(svg: inkex.SvgDocumentElement) -> dict[str, object]:
@@ -255,6 +278,23 @@ def sync_document_context(svg: inkex.SvgDocumentElement, selected: list[inkex.Ba
     write_document_context(document_context_from_svg(svg, selected, visual_snapshot=visual_snapshot))
 
 
+def register_current_document(
+    svg: inkex.SvgDocumentElement,
+    *,
+    worker_pid: int | None = None,
+    worker_origin: str = "inkscape-extension",
+) -> dict[str, str | None]:
+    document_name = _document_name(svg)
+    document_id = document_session_id(svg)
+    register_inkscape_document(
+        document_name=document_name,
+        document_id=document_id,
+        worker_pid=worker_pid,
+        worker_origin=worker_origin,
+    )
+    return {"document_name": document_name, "document_id": document_id}
+
+
 def apply_pending_jobs(svg: inkex.SvgDocumentElement, selected: list[inkex.BaseElement]) -> tuple[list[inkex.BaseElement], str]:
     _debug_log(f"apply_pending_jobs entered selection_count={len(selected)}")
     jobs = pending_jobs()
@@ -346,6 +386,7 @@ class ApplyPendingJobsWorker(inkex.EffectExtension):
         _debug_log("ApplyPendingJobsWorker.effect entered")
         append_event("worker_invoked", {"worker": "apply_pending_jobs"})
         selected = list(self.svg.selection.values())
+        register_current_document(self.svg, worker_origin="inkscape-apply-extension")
         _selected, summary = apply_pending_jobs(self.svg, selected)
         _debug_log(f"ApplyPendingJobsWorker.effect completed summary={summary}")
         inkex.utils.debug(f"FigureAgent for Inkscape: {summary}")

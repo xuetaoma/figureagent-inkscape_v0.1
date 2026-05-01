@@ -1,0 +1,82 @@
+[
+  {
+    "name": "rank top-right plot in panel c",
+    "tool": "rank_edit_targets",
+    "payload": {
+      "intent": "top right plot in panel c",
+      "panel": "c",
+      "limit": 3
+    },
+    "expect": {
+      "ok": true,
+      "min_ranked_count": 1,
+      "first_role": "axis_line",
+      "first_panel": "c"
+    }
+  },
+  {
+    "name": "rank panel label c",
+    "tool": "rank_edit_targets",
+    "payload": {
+      "intent": "make panel label c larger",
+      "role": "panel_label",
+      "panel": "c",
+      "limit": 3
+    },
+    "expect": {
+      "ok": true,
+      "first_object_id": "panel-c-label",
+      "first_role": "panel_label",
+      "first_panel": "c"
+    }
+  },
+  {
+    "name": "rank x axis label in panel c",
+    "tool": "rank_edit_targets",
+    "payload": {
+      "intent": "make the x axis label in panel c 10 pt",
+      "role": "axis_label",
+      "axis": "x",
+      "panel": "c",
+      "limit": 3
+    },
+    "expect": {
+      "ok": true,
+      "first_object_id": "panel-c-x-label",
+      "first_role": "axis_label",
+      "first_axis": "x",
+      "first_panel": "c"
+    }
+  },
+  {
+    "name": "query y axis labels",
+    "tool": "query_scene_graph",
+    "payload": {
+      "role": "axis_label",
+      "axis": "y",
+      "panel": "c",
+      "limit": 5
+    },
+    "expect": {
+      "ok": true,
+      "min_matched_count": 1,
+      "contains_object_id": "panel-c-y-label"
+    }
+  },
+  {
+    "name": "preview semantic font-size action",
+    "tool": "set_target_font_size",
+    "payload": {
+      "role": "axis_label",
+      "axis": "x",
+      "panel": "c",
+      "font_size_px": 13.333
+    },
+    "expect": {
+      "ok": true,
+      "apply": false,
+      "action_count": 1,
+      "first_action_kind": "set_object_font_size"
+    }
+  }
+]

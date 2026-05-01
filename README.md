@@ -30,13 +30,14 @@ The extension exposes only two menu items:
 
 `Open FigureAgent Chat` starts or refreshes the sidecar chat and captures the active document state.
 
-`Apply FigureAgent Changes` is the Inkscape-side worker entry point. In normal chat use, the browser triggers this automatically after an action plan is ready, so users should rarely need to click it manually.
+`Apply FigureAgent Changes` is the Inkscape-side execution entry point. In normal chat use, `Open FigureAgent Chat` snapshots and registers the active Inkscape document, then starts a document-scoped always-on worker. That worker watches for finalized action plans and asks Inkscape to apply them automatically, so users should rarely need to click this manually.
 
 ## What It Can Do Now
 
 Supported capabilities include:
 
 - create basic shapes and diagram primitives
+- create regular and custom-point polygons
 - create and edit text
 - change fill, stroke paint, stroke width, dash pattern, opacity, font size, font family, bold/italic, text anchoring, stroke cap/join, and arrowheads
 - move, resize, scale, rotate, align, and distribute objects
@@ -61,7 +62,7 @@ When you send a chat message:
 2. the model replies briefly about the intended operation
 3. the model generates a structured action plan
 4. the plan is written to bridge state
-5. Inkscape applies the finalized plan once
+5. the document-scoped always-on worker asks Inkscape to apply the finalized plan once
 6. the worker resyncs and writes execution/verification results
 
 The chat UI is intentionally concise:
@@ -110,12 +111,24 @@ Recommended config:
 ```bash
 INKSCAPE_COPILOT_PROVIDER=openai
 MAIN_MODEL=gpt-5.4
+OPENAI_MODEL=gpt-5.4
 OPENAI_API_KEY=your_openai_key_here
+```
+
+DeepSeek V4 Pro config:
+
+```bash
+INKSCAPE_COPILOT_PROVIDER=deepseek
+MAIN_MODEL=deepseek-v4-pro
+DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_API_KEY=your_deepseek_key_here
 ```
 
 Optional variables:
 
 - `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
+- `DEEPSEEK_MODEL`
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_BASE_URL`
 - `INKSCAPE_COPILOT_ENV_FILE`
@@ -132,6 +145,12 @@ If you move the project somewhere else, point the extension at the correct file:
 
 ```bash
 launchctl setenv INKSCAPE_COPILOT_ENV_FILE "/path/to/inkscape-copilot/.env"
+```
+
+On Windows 11, use PowerShell:
+
+```powershell
+setx INKSCAPE_COPILOT_ENV_FILE "C:\path\to\inkscape-copilot\.env"
 ```
 
 ## Python Environment
@@ -175,6 +194,99 @@ Then open:
 http://127.0.0.1:8767
 ```
 
+## Run The MCP Server
+
+FigureAgent includes a stdio MCP server that exposes the same typed tool boundary used by the local CLI and browser app:
+
+```bash
+source .venv/bin/activate
+python3 -m inkscape_copilot.cli mcp
+```
+
+If installed as a package, you can also use:
+
+```bash
+figureagent-inkscape-mcp
+```
+
+Example MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "figureagent-inkscape": {
+      "command": "python3",
+      "args": ["-m", "inkscape_copilot.cli", "mcp"],
+      "cwd": "/path/to/figureagent-inkscape"
+    }
+  }
+}
+```
+
+Useful MCP/local tools include:
+
+- `get_document_context`: read the latest structured document state and visual snapshot metadata
+- `get_ui_state`: read the aggregate dashboard state used by thin clients such as the browser UI
+- `sync_live_document_context`: ask Inkscape to refresh the live document context and rendered snapshots
+- `get_snapshot_paths`: return local SVG/PNG snapshot paths and existence metadata
+- `query_scene_graph`: filter the latest scene graph by role, panel, axis, object ID, text, or relationship selectors
+- `get_object_details`: inspect one object and its related/grouped/attached objects
+- `rank_edit_targets`: rank likely edit targets for an intent such as `top right plot in panel c`
+- `validate_action_plan`: validate a structured action plan
+- `dispatch_action_plan`: queue a plan and wait for it to apply
+- `select_targets`: preview/apply semantic target selection
+- `set_target_font_size`: preview/apply font-size edits by object ID, role, panel, text, or relationship selector
+- `set_target_stroke_width`: preview/apply stroke-width edits by selector
+- `move_targets`: preview/apply relative moves by selector
+- `create_polygon`: preview/apply regular or custom-point polygon creation
+- `resize_plot_width` / `resize_plot_height`: preview/apply semantic plot resizing while preserving tick/text styling
+- `set_tick_length` / `set_tick_thickness`: preview/apply axis tick edits
+- `run_publication_qa`: evaluate the latest document context and return safe fix suggestions
+- `apply_publication_fixes`: preview/apply safe publication QA fixes
+- `apply_publication_fix`: preview/apply one safe publication QA fix by `finding_index` or `rule_id`
+- `start_always_on_worker`: start the queue-watching Inkscape worker
+- `stop_always_on_worker`: stop the queue-watching worker
+- `get_always_on_worker_status`: check whether the worker is running
+
+MCP resources include:
+
+- `figureagent://document/context`
+- `figureagent://document/scene-graph`
+- `figureagent://document/snapshot.svg`
+- `figureagent://document/snapshot.png`
+- `figureagent://bridge/status`
+- `figureagent://bridge/events`
+- `figureagent://worker/log`
+- `figureagent://publication/qa`
+- `figureagent://publication/rubric`
+- `figureagent://publication/feedback`
+- `figureagent://publication/examples`
+
+Recommended MCP agent loop:
+
+1. read `figureagent://document/context` and `figureagent://document/snapshot.png`
+2. inspect targets using `query_scene_graph`, `rank_edit_targets`, or `figureagent://document/scene-graph`
+3. if the context might be stale, call `sync_live_document_context`
+4. call a focused edit tool with `apply=false` to preview the action plan
+5. call the same tool with `apply=true` or call `dispatch_action_plan`
+6. read `figureagent://publication/qa` and the updated snapshot to verify
+
+You can manage the same worker from the CLI:
+
+```bash
+python3 -m inkscape_copilot.cli worker start
+python3 -m inkscape_copilot.cli worker status
+python3 -m inkscape_copilot.cli worker stop
+```
+
+The worker status includes the attached Inkscape document metadata:
+
+```bash
+python3 -m inkscape_copilot.cli worker status
+```
+
+Design note: standard Inkscape effect extensions are still one-shot. A permanently running effect process would block the Inkscape UI and would not commit SVG changes until it exits. FigureAgent therefore uses an Inkscape-registered, document-scoped supervisor as the reliable no-click worker model.
+
 ## Install Inkscape Extension
 
 Copy into your Inkscape user extensions directory:
@@ -189,12 +301,60 @@ On macOS this is typically:
 ~/Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions
 ```
 
+On Windows 11 this is typically:
+
+```powershell
+$env:APPDATA\inkscape\extensions
+```
+
 After copying, restart Inkscape. The `Extensions -> FigureAgent` submenu should contain exactly:
 
 - `Open FigureAgent Chat`
 - `Apply FigureAgent Changes`
 
+## Windows 11 Compatibility
+
+The core Python package, MCP server, browser UI, harness, OpenAI/DeepSeek API calls, and Inkscape CLI snapshot export are designed to run on Windows 11.
+
+Current limitation:
+
+- automatic menu triggering for `Apply FigureAgent Changes` is still macOS-only because it uses AppleScript/System Events
+- on Windows, the chat can open and plan through the same MCP/tool layer, but applying queued changes may still require manually choosing `Extensions -> FigureAgent -> Apply FigureAgent Changes`
+
+Recommended Windows setup:
+
+```powershell
+cd C:\path\to\inkscape-copilot
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+setx INKSCAPE_COPILOT_ENV_FILE "C:\path\to\inkscape-copilot\.env"
+```
+
+If PNG snapshots do not render, set the Inkscape CLI path explicitly:
+
+```powershell
+setx INKSCAPE_COPILOT_INKSCAPE_BIN "C:\Program Files\Inkscape\bin\inkscape.com"
+```
+
 ## Evaluation Harness
+
+FigureAgent has two evaluation paths.
+
+To test the deterministic tool/MCP contract against fixture document contexts:
+
+```bash
+python3 scripts/run_harness.py --mcp-smoke --out state/harness_report.json
+```
+
+Or through the package CLI:
+
+```bash
+python3 -m inkscape_copilot.cli harness --mcp-smoke --out state/harness_report.json
+```
+
+This loads `tests/fixtures/contexts/multi_panel_publication.json`, runs semantic scenarios from `tests/fixtures/harness_scenarios.json`, checks target ranking and preview actions, and smoke-tests the MCP server against the same isolated runtime.
 
 To test screenshot-to-action planning without manually using the chat UI:
 
@@ -202,7 +362,7 @@ To test screenshot-to-action planning without manually using the chat UI:
 python3 scripts/evaluate_screenshots.py "/path/to/reference.png"
 ```
 
-The harness writes JSON results under `state/` and reports whether the plan produced actions, avoided confirmation stalls, and fit newly-created geometry inside the current page.
+The screenshot harness writes JSON results under `state/` and reports whether the plan produced actions, avoided confirmation stalls, and fit newly-created geometry inside the current page.
 
 ## Development Direction
 

@@ -98,6 +98,20 @@ def _has_target_selector(params: dict[str, Any]) -> bool:
     return string_selector or isinstance(params.get("object_index"), (int, float))
 
 
+def _polygon_points(params: dict[str, Any]) -> list[dict[str, float]] | None:
+    points = params.get("points")
+    if points is None:
+        return None
+    if not isinstance(points, list) or len(points) < 3:
+        raise ValueError("create_polygon params.points must contain at least 3 points")
+    normalized: list[dict[str, float]] = []
+    for point in points:
+        if not isinstance(point, dict) or not all(isinstance(point.get(key), (int, float)) for key in ("x", "y")):
+            raise ValueError("create_polygon params.points must be objects with numeric x and y")
+        normalized.append({"x": float(point["x"]), "y": float(point["y"])})
+    return normalized
+
+
 @dataclass(frozen=True)
 class Action:
     kind: str
@@ -303,8 +317,11 @@ class Action:
                 raise ValueError("create_repeated_circles requires numeric x, y, radius, count, and spacing_x")
             _numeric_or_default(params, "spacing_y", 0.0)
         elif kind == "create_polygon":
-            if not all(isinstance(params.get(key), (int, float)) for key in ("cx", "cy", "radius", "count")):
-                raise ValueError("create_polygon requires numeric cx, cy, radius, and count")
+            points = _polygon_points(params)
+            if points is not None:
+                params["points"] = points
+            elif not all(isinstance(params.get(key), (int, float)) for key in ("cx", "cy", "radius", "count")):
+                raise ValueError("create_polygon requires either params.points or numeric cx, cy, radius, and count")
             _numeric_or_default(params, "degrees", 0.0)
         elif kind == "create_star":
             if not all(isinstance(params.get(key), (int, float)) for key in ("cx", "cy", "radius", "inner_radius", "count")):
@@ -421,6 +438,18 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "parent_id": {"type": ["string", "null"]},
                                 "percent": {"type": ["number", "null"]},
                                 "prefix": {"type": ["string", "null"]},
+                                "points": {
+                                    "type": ["array", "null"],
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": False,
+                                        "properties": {
+                                            "x": {"type": "number"},
+                                            "y": {"type": "number"},
+                                        },
+                                        "required": ["x", "y"],
+                                    },
+                                },
                                 "radius": {"type": ["number", "null"]},
                                 "new_text": {"type": ["string", "null"]},
                                 "role": {"type": ["string", "null"]},
@@ -476,6 +505,7 @@ def action_plan_json_schema() -> dict[str, Any]:
                                 "parent_id",
                                 "percent",
                                 "prefix",
+                                "points",
                                 "radius",
                                 "new_text",
                                 "role",

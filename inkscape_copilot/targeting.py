@@ -195,12 +195,14 @@ def panel_labels(nodes: list[Any]) -> list[tuple[str, dict[str, float], str]]:
         if not text or not bbox:
             continue
         cleaned = text.strip()
-        if len(cleaned) == 1 and cleaned in "abcdefghijklmnopqrstuvwxyz" and node.get("id"):
-            key = (cleaned, str(node.get("id")))
+        match = re.fullmatch(r"\(?\s*([a-zA-Z])\s*\)?", cleaned)
+        if match and node.get("id"):
+            label = match.group(1).lower()
+            key = (label, str(node.get("id")))
             if key in seen:
                 continue
             seen.add(key)
-            labels.append((cleaned, bbox, str(node.get("id"))))
+            labels.append((label, bbox, str(node.get("id"))))
     return labels
 
 
@@ -220,14 +222,32 @@ def nearest_panel(bbox: dict[str, float] | None, labels: list[tuple[str, dict[st
 
 
 def infer_role(tag: str, text: str | None, bbox: dict[str, float] | None, fill: str | None, stroke: str | None) -> tuple[str | None, str | None]:
-    if text:
+    if text and tag in {"text", "tspan"}:
         cleaned = text.strip()
         lowered = cleaned.lower()
-        if tag == "text" and len(cleaned) == 1 and cleaned in "abcdefghijklmnopqrstuvwxyz":
+        panel_match = re.fullmatch(r"\(?\s*([a-zA-Z])\s*\)?", cleaned)
+        if tag == "text" and panel_match:
             return "panel_label", None
         if re.fullmatch(r"[\d\s\.\,\-\+\(\)\[\]/%]+", lowered):
             return "tick_label", None
-        if "axis" in lowered:
+        if (
+            "axis" in lowered
+            or lowered.startswith("n(")
+            or lowered.startswith("n (")
+            or "cm" in lowered
+            or "rho" in lowered
+            or "ρ" in lowered
+            or "omega" in lowered
+            or "ω" in lowered
+            or lowered.startswith("x x")
+            or lowered.startswith("x_x")
+        ):
+            if lowered.startswith("n") or "cm" in lowered:
+                return "axis_label", "x"
+            if "rho" in lowered or "ρ" in lowered or "omega" in lowered or "ω" in lowered:
+                return "axis_label", "y"
+            if lowered.startswith("x x") or lowered.startswith("x_x"):
+                return "axis_label", "y"
             if lowered.startswith("x") or " x" in lowered:
                 return "axis_label", "x"
             if lowered.startswith("y") or " y" in lowered:

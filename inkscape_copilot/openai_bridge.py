@@ -17,6 +17,7 @@ from .publication_memory import publication_memory_summary
 from .publication_qa import publication_qa
 from .schema import Action, ActionPlan, action_plan_json_schema
 from .templates import build_layer_schematic_plan, build_publication_figure_plan
+from .platform_support import is_macos
 
 
 DEFAULT_PROVIDER = "openai"
@@ -110,6 +111,8 @@ def _looks_like_placeholder(value: str | None) -> bool:
 
 
 def _launchctl_env(name: str) -> str | None:
+    if not is_macos():
+        return None
     try:
         result = subprocess.run(
             ["launchctl", "getenv", name],
@@ -289,6 +292,17 @@ def _action_bbox(action: Action) -> tuple[float, float, float, float] | None:
             last_y = y + (max(0, int(count) - 1) * spacing_y)
             return (min(x, last_x) - radius, min(y, last_y) - radius, max(x, last_x) + radius, max(y, last_y) + radius)
     if action.kind in {"create_polygon", "create_star"}:
+        points = params.get("points")
+        if action.kind == "create_polygon" and isinstance(points, list) and points:
+            numeric_points = [
+                (float(point["x"]), float(point["y"]))
+                for point in points
+                if isinstance(point, dict) and isinstance(point.get("x"), (int, float)) and isinstance(point.get("y"), (int, float))
+            ]
+            if numeric_points:
+                xs = [point[0] for point in numeric_points]
+                ys = [point[1] for point in numeric_points]
+                return (min(xs), min(ys), max(xs), max(ys))
         cx = number("cx")
         cy = number("cy")
         radius = number("radius")
@@ -468,7 +482,11 @@ def _normalize_deepseek_url(url: str) -> str:
 
 def _model_name(model: str | None, provider: str) -> str:
     _load_local_env()
-    return os.environ.get("MAIN_MODEL", DEFAULT_MODEL)
+    if model:
+        return model
+    if provider == "deepseek":
+        return os.environ.get("DEEPSEEK_MODEL") or os.environ.get("MAIN_MODEL") or DEFAULT_DEEPSEEK_MODEL
+    return os.environ.get("OPENAI_MODEL") or os.environ.get("MAIN_MODEL") or DEFAULT_MODEL
 
 
 def _request_headers(resolved_api_key: str) -> dict[str, str]:
@@ -511,6 +529,7 @@ def _system_prompt() -> str:
         "Use set_tick_length for requests about making ticks longer or shorter, set_tick_thickness for tick stroke weight, and set_tick_label_size for numeric tick label text size. "
         "For publication plot resizing, prefer resize_plot_width or resize_plot_height over scale_selection. These semantic resize actions anchor on detected axis lines when possible, change the plot geometry, keep tick length, tick thickness, stroke widths, and text sizes visually stable, and avoid scaling panel labels. Use scale_selection only when the user explicitly wants every selected object scaled visually. "
         "Use set_object_font_family, set_object_font_weight, set_object_font_style, and set_object_text_anchor for typography polish; use set_object_stroke_linecap, set_object_stroke_linejoin, and set_object_arrowhead for line/arrow styling. "
+        "For custom polygon regions, masks, slanted panels, arrows without arrowheads, or irregular schematic surfaces, use create_polygon with params.points as at least three {x, y} points. For regular polygons, use create_polygon with cx, cy, radius, count, and optional degrees. "
         "For publication-ready or publication-level cleanup requests, use publication_rubric, publication_qa, and publication_fix_suggestions from the user prompt. Apply safe obvious fixes such as panel labels 12 pt, axis labels 10 pt, tick labels 9 pt, and consistent tick styles; avoid ambiguous fixes like renaming missing/duplicate panels unless the user explicitly requests it. "
         "After duplicate_selection or create_* actions, later actions in the same plan should assume the newly created object(s) are the active target. "
         "For diagrams, approximate complex visual references with supported primitives and prefer high-level diagram actions like "
@@ -678,11 +697,17 @@ def _user_prompt(prompt: str, document: DocumentContext) -> str:
                 },
                 "create_polygon": {
                     "params": {
-                        "cx": 120.0,
-                        "cy": 120.0,
-                        "radius": 40.0,
-                        "count": 6,
+                        "cx": None,
+                        "cy": None,
+                        "radius": None,
+                        "count": None,
                         "degrees": 0.0,
+                        "points": [
+                            {"x": 90.0, "y": 90.0},
+                            {"x": 145.0, "y": 100.0},
+                            {"x": 130.0, "y": 145.0},
+                            {"x": 80.0, "y": 135.0},
+                        ],
                         "fill_hex": "#2563eb",
                         "stroke_hex": None,
                         "stroke_width_px": None,

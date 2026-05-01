@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+from .platform_support import is_macos, is_windows
+
 
 def _copilot_menu_script(menu_item_name: str, *, auto_confirm: bool = False) -> str:
     auto_confirm_block = ""
@@ -98,6 +100,19 @@ end tell
 
 
 def trigger_copilot_menu_item(menu_item_name: str, *, auto_confirm: bool = False) -> tuple[bool, str | None]:
+    if not is_macos():
+        if is_windows():
+            return (
+                False,
+                "Automatic Inkscape menu triggering is not implemented on Windows yet. "
+                f"Use Extensions -> FigureAgent -> {menu_item_name}, or run the MCP/tool flow and apply manually.",
+            )
+        return (
+            False,
+            "Automatic Inkscape menu triggering currently requires macOS AppleScript. "
+            f"Use Extensions -> FigureAgent -> {menu_item_name} manually on this platform.",
+        )
+
     script = _copilot_menu_script(menu_item_name, auto_confirm=auto_confirm)
     try:
         result = subprocess.run(

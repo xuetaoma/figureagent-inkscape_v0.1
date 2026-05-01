@@ -7,9 +7,12 @@ import sys
 from .bridge import pending_jobs, read_status, reset_state
 from .chat import run_chat
 from .defaults import default_document_context
+from .harness import add_harness_arguments, print_harness_report, run_harness
 from .openai_bridge import OpenAIPlannerError, plan_with_openai
 from .schema import ActionPlan
 from .interpreter import PromptError, interpret_prompt
+from .mcp_server import serve_stdio
+from .tools import call_tool, list_tools
 from .webapp import run_web_app
 
 
@@ -53,6 +56,52 @@ def cmd_reset(_: argparse.Namespace) -> int:
     reset_state()
     print(json.dumps({"state": "idle", "queue_cleared": True}, indent=2))
     return 0
+
+
+def cmd_tools(_: argparse.Namespace) -> int:
+    print(json.dumps(list_tools(), indent=2))
+    return 0
+
+
+def cmd_tool_call(args: argparse.Namespace) -> int:
+    try:
+        payload = json.loads(args.payload) if args.payload else {}
+        if not isinstance(payload, dict):
+            raise ValueError("Tool payload must be a JSON object.")
+        result = call_tool(args.name, payload)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_mcp(_: argparse.Namespace) -> int:
+    return serve_stdio()
+
+
+def cmd_worker(args: argparse.Namespace) -> int:
+    payload = {}
+    if args.worker_command == "start":
+        payload["interval_seconds"] = args.interval
+        if args.document_name:
+            payload["document_name"] = args.document_name
+        if args.document_id:
+            payload["document_id"] = args.document_id
+        payload["worker_origin"] = "cli"
+        result = call_tool("start_always_on_worker", payload)
+    elif args.worker_command == "stop":
+        result = call_tool("stop_always_on_worker", payload)
+    else:
+        result = call_tool("get_always_on_worker_status", payload)
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("ok", True) else 1
+
+
+def cmd_harness(args: argparse.Namespace) -> int:
+    report = run_harness(args)
+    print_harness_report(report, out=args.out)
+    return 0 if report["ok"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -115,6 +164,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     reset_parser = subparsers.add_parser("reset", help="Clear queued jobs and reset bridge status")
     reset_parser.set_defaults(func=cmd_reset)
+
+    tools_parser = subparsers.add_parser("tools", help="List FigureAgent local tools")
+    tools_parser.set_defaults(func=cmd_tools)
+
+    tool_call_parser = subparsers.add_parser("tool-call", help="Call one FigureAgent local tool with a JSON payload")
+    tool_call_parser.add_argument("name", help="Tool name to call")
+    tool_call_parser.add_argument("payload", nargs="?", default="{}", help="JSON object payload")
+    tool_call_parser.set_defaults(func=cmd_tool_call)
+
+    mcp_parser = subparsers.add_parser("mcp", help="Start the FigureAgent MCP stdio server")
+    mcp_parser.set_defaults(func=cmd_mcp)
+
+    worker_parser = subparsers.add_parser("worker", help="Manage the always-on FigureAgent Inkscape worker")
+    worker_subparsers = worker_parser.add_subparsers(dest="worker_command", required=True)
+
+    worker_start = worker_subparsers.add_parser("start", help="Start the always-on worker")
+    worker_start.add_argument("--interval", type=float, default=0.75)
+    worker_start.add_argument("--document-name")
+    worker_start.add_argument("--document-id")
+    worker_start.set_defaults(func=cmd_worker)
+
+    worker_stop = worker_subparsers.add_parser("stop", help="Stop the always-on worker")
+    worker_stop.set_defaults(func=cmd_worker)
+
+    worker_status = worker_subparsers.add_parser("status", help="Show always-on worker status")
+    worker_status.set_defaults(func=cmd_worker)
+
+    harness_parser = subparsers.add_parser("harness", help="Run fixture-backed FigureAgent tool/MCP scenarios")
+    add_harness_arguments(harness_parser)
+    harness_parser.set_defaults(func=cmd_harness)
 
     return parser
 

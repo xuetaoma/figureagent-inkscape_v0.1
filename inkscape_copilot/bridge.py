@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .defaults import DEFAULT_PAGE_HEIGHT_PX, DEFAULT_PAGE_WIDTH_PX
+from .platform_support import default_runtime_root
 from .planner import DocumentContext
 from .schema import ActionPlan
 
@@ -17,12 +18,7 @@ def runtime_root() -> Path:
     explicit_root = os.environ.get("INKSCAPE_COPILOT_HOME")
     if explicit_root:
         return Path(explicit_root).expanduser().resolve()
-
-    app_support_root = (
-        Path.home()
-        / "Library/Application Support/org.inkscape.Inkscape/config/inkscape/extensions/inkscape_copilot_runtime"
-    )
-    return app_support_root.resolve()
+    return default_runtime_root()
 
 
 PROJECT_ROOT = runtime_root()
@@ -37,6 +33,41 @@ EXECUTION_RESULT_FILE = STATE_DIR / "execution_result.json"
 SNAPSHOT_DIR = STATE_DIR / "snapshots"
 DOCUMENT_SVG_SNAPSHOT_FILE = SNAPSHOT_DIR / "current_document.svg"
 DOCUMENT_PNG_SNAPSHOT_FILE = SNAPSHOT_DIR / "current_document.png"
+
+
+def configure_runtime_root(root: Path) -> None:
+    """Point bridge state at an explicit runtime root.
+
+    Most FigureAgent processes use paths derived from `INKSCAPE_COPILOT_HOME`
+    at import time. The fixture harness needs isolated state after the CLI has
+    already imported this module, so it rebinds the path globals deliberately.
+    """
+
+    global PROJECT_ROOT
+    global STATE_DIR
+    global QUEUE_FILE
+    global STATUS_FILE
+    global EVENTS_FILE
+    global DOCUMENT_CONTEXT_FILE
+    global SESSION_FILE
+    global PLANNED_STEP_FILE
+    global EXECUTION_RESULT_FILE
+    global SNAPSHOT_DIR
+    global DOCUMENT_SVG_SNAPSHOT_FILE
+    global DOCUMENT_PNG_SNAPSHOT_FILE
+
+    PROJECT_ROOT = root.expanduser().resolve()
+    STATE_DIR = PROJECT_ROOT / "state"
+    QUEUE_FILE = STATE_DIR / "queue.jsonl"
+    STATUS_FILE = STATE_DIR / "status.json"
+    EVENTS_FILE = STATE_DIR / "events.jsonl"
+    DOCUMENT_CONTEXT_FILE = STATE_DIR / "document_context.json"
+    SESSION_FILE = STATE_DIR / "session.json"
+    PLANNED_STEP_FILE = STATE_DIR / "planned_step.json"
+    EXECUTION_RESULT_FILE = STATE_DIR / "execution_result.json"
+    SNAPSHOT_DIR = STATE_DIR / "snapshots"
+    DOCUMENT_SVG_SNAPSHOT_FILE = SNAPSHOT_DIR / "current_document.svg"
+    DOCUMENT_PNG_SNAPSHOT_FILE = SNAPSHOT_DIR / "current_document.png"
 
 
 def utc_now() -> str:
@@ -133,6 +164,10 @@ def ensure_state_files() -> None:
                     "last_heartbeat_at": None,
                     "worker_state": "idle",
                     "attached_document_name": None,
+                    "attached_document_id": None,
+                    "attached_at": None,
+                    "worker_pid": None,
+                    "worker_origin": None,
                     "last_error": None,
                 },
                 indent=2,
@@ -314,6 +349,10 @@ def reset_state() -> None:
                 "last_heartbeat_at": None,
                 "worker_state": "idle",
                 "attached_document_name": None,
+                "attached_document_id": None,
+                "attached_at": None,
+                "worker_pid": None,
+                "worker_origin": None,
                 "last_error": None,
             },
             indent=2,
@@ -495,6 +534,10 @@ def read_session_state() -> dict[str, Any]:
             "last_heartbeat_at": None,
             "worker_state": "idle",
             "attached_document_name": None,
+            "attached_document_id": None,
+            "attached_at": None,
+            "worker_pid": None,
+            "worker_origin": None,
             "last_error": None,
         }
     payload = json.loads(raw)
@@ -504,11 +547,21 @@ def read_session_state() -> dict[str, Any]:
     payload.setdefault("last_heartbeat_at", None)
     payload.setdefault("worker_state", "idle")
     payload.setdefault("attached_document_name", None)
+    payload.setdefault("attached_document_id", None)
+    payload.setdefault("attached_at", None)
+    payload.setdefault("worker_pid", None)
+    payload.setdefault("worker_origin", None)
     payload.setdefault("last_error", None)
     return payload
 
 
-def mark_session_started(document_name: str | None = None) -> None:
+def mark_session_started(
+    document_name: str | None = None,
+    *,
+    document_id: str | None = None,
+    worker_pid: int | None = None,
+    worker_origin: str | None = None,
+) -> None:
     write_session_state(
         {
             "active": True,
@@ -516,20 +569,63 @@ def mark_session_started(document_name: str | None = None) -> None:
             "last_heartbeat_at": utc_now(),
             "worker_state": "watching",
             "attached_document_name": document_name,
+            "attached_document_id": document_id,
+            "attached_at": utc_now() if document_name or document_id else None,
+            "worker_pid": worker_pid,
+            "worker_origin": worker_origin,
             "last_error": None,
         }
     )
-    append_event("session_started", {"document_name": document_name})
+    append_event(
+        "session_started",
+        {
+            "document_name": document_name,
+            "document_id": document_id,
+            "worker_pid": worker_pid,
+            "worker_origin": worker_origin,
+        },
+    )
 
 
-def mark_session_heartbeat(worker_state: str = "watching") -> None:
+def register_inkscape_document(
+    *,
+    document_name: str | None,
+    document_id: str | None,
+    worker_pid: int | None = None,
+    worker_origin: str = "inkscape-extension",
+) -> None:
     write_session_state(
         {
             "active": True,
-            "last_heartbeat_at": utc_now(),
-            "worker_state": worker_state,
+            "attached_document_name": document_name,
+            "attached_document_id": document_id,
+            "attached_at": utc_now(),
+            "worker_pid": worker_pid,
+            "worker_origin": worker_origin,
+            "worker_state": "attached",
+            "last_error": None,
         }
     )
+    append_event(
+        "inkscape_document_attached",
+        {
+            "document_name": document_name,
+            "document_id": document_id,
+            "worker_pid": worker_pid,
+            "worker_origin": worker_origin,
+        },
+    )
+
+
+def mark_session_heartbeat(worker_state: str = "watching", *, worker_pid: int | None = None) -> None:
+    payload: dict[str, Any] = {
+        "active": True,
+        "last_heartbeat_at": utc_now(),
+        "worker_state": worker_state,
+    }
+    if worker_pid is not None:
+        payload["worker_pid"] = worker_pid
+    write_session_state(payload)
 
 
 def mark_session_stopped(error: str | None = None) -> None:
